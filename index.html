@@ -57,7 +57,7 @@
 <div id="auth-modal" hidden></div>
 <div id="toast-stack" aria-live="polite"></div>
 <!-- Synchro temps réel entre les deux membres d'un espace (facultatif — clé
-     configurée via ?admin). Sans elle, l'appli reste 100% fonctionnelle,
+     intégrée au fichier). Sans elle, l'appli reste 100% fonctionnelle,
      juste sans notification instantanée côté binôme. -->
 <script src="https://cdn.ably.io/lib/ably.min-2.js"></script>
 <script>
@@ -129,15 +129,14 @@ function boot(INITIAL_STATE) {
      sauvegarde). Un code d'invitation à 6 caractères permet à un second
      compte de rejoindre directement l'espace du premier au lieu de s'en
      créer un nouveau. */
-  // Config admin "embarquée" dans le fichier : générée une fois via ?admin,
-  // puis collée ici par toi avant de déployer. Comme ça, N'IMPORTE QUEL
+  // Config de la base "embarquée" dans le fichier. Comme ça, N'IMPORTE QUEL
   // appareil qui ouvre le site (ton binôme sur son téléphone, etc.) a
-  // directement accès à l'appli sans devoir lui-même passer par ?admin.
+  // directement accès à l'appli.
   // Cette clé n'est protégée par rien côté utilisateur final — la seule
   // protection réelle est de ne l'utiliser que sur un compte JSONBin dédié
   // à cette appli.
-  var EMBEDDED_ADMIN_CONFIG = {"masterKey":"$2a$10$TsZpIXjWtXHI1XlGNuIj.emvYcphgnJRX8T7eaorhkfX6ih3il8xG","indexBinId":"6a94474ada38895dfe233ef2","ablyKey":"b1-gAw.GJRpHg:zdOxrwALlCVKvWLuykzFMStRyFsm4FwfOI3ZXYbLRi8"};
-  var adminConfig = loadAdminConfig();      // { masterKey, indexBinId }
+  var EMBEDDED_DB_CONFIG = {"masterKey":"$2a$10$TsZpIXjWtXHI1XlGNuIj.emvYcphgnJRX8T7eaorhkfX6ih3il8xG","indexBinId":"6a94474ada38895dfe233ef2","ablyKey":"b1-gAw.GJRpHg:zdOxrwALlCVKvWLuykzFMStRyFsm4FwfOI3ZXYbLRi8"};
+  var dbConfig = loadDbConfig();      // { masterKey, indexBinId }
   var session = loadSession();              // { email, name, spaceId, binId }
   var spaceLoaded = false;                  // state.items a bien été chargé depuis le bin de l'espace
   var authMode = "login";                   // "login" | "register"
@@ -839,13 +838,13 @@ function boot(INITIAL_STATE) {
 
   function clone(obj) { return JSON.parse(JSON.stringify(obj)); }
 
-  /* ---------- admin config (clés JSONBin) ---------- */
-  function loadAdminConfig() {
+  /* ---------- config base (clés JSONBin) ---------- */
+  function loadDbConfig() {
     try {
-      var stored = JSON.parse(localStorage.getItem("dp-admin-config") || "null");
+      var stored = JSON.parse(localStorage.getItem("dp-db-config") || "null");
       if (stored && stored.indexBinId && stored.masterKey) return stored;
     } catch (e) { /* ignore, on retombe sur la config embarquée */ }
-    return EMBEDDED_ADMIN_CONFIG || {};
+    return EMBEDDED_DB_CONFIG || {};
   }
 
   /* ---------- apparence (clair / sombre / système) ----------
@@ -924,7 +923,7 @@ function boot(INITIAL_STATE) {
   var JSONBIN_ROOT = "https://api.jsonbin.io/v3/b";
   function jsonbinHeaders(extra) {
     var h = { "Content-Type": "application/json" };
-    if (adminConfig.masterKey) h["X-Master-Key"] = adminConfig.masterKey;
+    if (dbConfig.masterKey) h["X-Master-Key"] = dbConfig.masterKey;
     return Object.assign(h, extra || {});
   }
   async function jsonbinCreate(content, name) {
@@ -964,7 +963,7 @@ function boot(INITIAL_STATE) {
     return jsonbinWrite(binId, current);
   }
   async function loadIndex() {
-    indexCache = await jsonbinRead(adminConfig.indexBinId);
+    indexCache = await jsonbinRead(dbConfig.indexBinId);
     if (!indexCache.users) indexCache.users = {};
     if (!indexCache.spaces) indexCache.spaces = {};
     return indexCache;
@@ -1505,7 +1504,7 @@ function boot(INITIAL_STATE) {
       bindSharePage();
       return;
     }
-    if (!adminConfig.indexBinId || !adminConfig.masterKey) { root.innerHTML = renderSetupNeeded(); return; }
+    if (!dbConfig.indexBinId || !dbConfig.masterKey) { root.innerHTML = renderSetupNeeded(); return; }
     if (!session) { root.innerHTML = renderAuth(); bindAuth(); return; }
     if (!spaceLoaded) { root.innerHTML = renderLoadingSpace(); return; }
     myName = session.name;
@@ -1633,8 +1632,7 @@ function boot(INITIAL_STATE) {
   function renderSetupNeeded() {
     return "<div class=\"onboard\"><p class=\"wordmark\">Deux Places <span class=\"beta-badge\">Beta</span></p>" +
       "<h1 class=\"onboard-title\">Configuration requise</h1>" +
-      "<p class=\"onboard-sub\">L'application n'est pas encore reliée à sa base JSONBin. Un administrateur doit d'abord passer par la page de configuration.</p>" +
-      "<a class=\"btn btn--primary\" href=\"?admin\">Ouvrir la configuration admin</a></div>";
+      "<p class=\"onboard-sub\">L'application n'est pas encore reliée à sa base JSONBin. Réessaie plus tard.</p></div>";
   }
 
   function renderLoadingSpace() {
@@ -1961,7 +1959,7 @@ function boot(INITIAL_STATE) {
       idx.spaces[spaceId] = spaceEntry;
     }
     idx.users[email] = { email: email, name: name, passwordHash: passwordHash, salt: salt, spaceId: spaceId, createdAt: Date.now() };
-    await jsonbinWrite(adminConfig.indexBinId, idx);
+    await jsonbinWrite(dbConfig.indexBinId, idx);
     saveSession({ email: email, name: name, spaceId: spaceId, binId: binId });
   }
 
@@ -1996,7 +1994,7 @@ function boot(INITIAL_STATE) {
     var newSalt = randomHex(16);
     user.passwordHash = await hashPassword(newPassword, newSalt);
     user.salt = newSalt;
-    await jsonbinWrite(adminConfig.indexBinId, idx);
+    await jsonbinWrite(dbConfig.indexBinId, idx);
     var spaceEntry = idx.spaces[user.spaceId];
     saveSession({ email: email, name: user.name, spaceId: user.spaceId, binId: spaceEntry.binId });
   }
@@ -2010,7 +2008,7 @@ function boot(INITIAL_STATE) {
     var newSalt = randomHex(16);
     user.passwordHash = await hashPassword(newPassword, newSalt);
     user.salt = newSalt;
-    await jsonbinWrite(adminConfig.indexBinId, idx);
+    await jsonbinWrite(dbConfig.indexBinId, idx);
   }
 
   // Changer de prénom est plus délicat que ça en a l'air : partout ailleurs
@@ -2031,7 +2029,7 @@ function boot(INITIAL_STATE) {
     });
     if (taken) throw { message: "Ce prénom est déjà pris par ton binôme." };
     if (idx.users[session.email]) idx.users[session.email].name = newName;
-    await jsonbinWrite(adminConfig.indexBinId, idx);
+    await jsonbinWrite(dbConfig.indexBinId, idx);
     indexCache = idx;
     await persist(function (s) {
       s.items.forEach(function (item) {
@@ -2065,7 +2063,7 @@ function boot(INITIAL_STATE) {
   async function setAvatarColor(color) {
     var idx = await loadIndex();
     if (idx.users[session.email]) idx.users[session.email].avatarColor = color;
-    await jsonbinWrite(adminConfig.indexBinId, idx);
+    await jsonbinWrite(dbConfig.indexBinId, idx);
     indexCache = idx;
   }
 
@@ -2082,7 +2080,7 @@ function boot(INITIAL_STATE) {
     var newBinId = await jsonbinCreate({ items: [] }, "deux-places-space-" + newSpaceId);
     idx.spaces[newSpaceId] = { binId: newBinId, members: [session.email], inviteCode: randomInviteCode() };
     idx.users[session.email].spaceId = newSpaceId;
-    await jsonbinWrite(adminConfig.indexBinId, idx);
+    await jsonbinWrite(dbConfig.indexBinId, idx);
     disconnectAblyChannel();
     saveSession({ email: session.email, name: session.name, spaceId: newSpaceId, binId: newBinId });
     indexCache = idx;
@@ -2109,7 +2107,7 @@ function boot(INITIAL_STATE) {
     var newBinId = await jsonbinCreate({ items: [] }, "deux-places-space-" + newSpaceId);
     idx.spaces[newSpaceId] = { binId: newBinId, members: [partnerEmail], inviteCode: randomInviteCode() };
     if (idx.users[partnerEmail]) idx.users[partnerEmail].spaceId = newSpaceId;
-    await jsonbinWrite(adminConfig.indexBinId, idx);
+    await jsonbinWrite(dbConfig.indexBinId, idx);
     indexCache = idx;
     if (ablyChannel) { try { ablyChannel.publish("excluded", { email: partnerEmail }); } catch (e) {} }
   }
@@ -2201,10 +2199,10 @@ function boot(INITIAL_STATE) {
   // notification instantanée côté binôme). Le canal est propre à cet espace
   // (spaceId) : seuls les deux comptes qui le partagent peuvent s'y croiser.
   function connectAblyChannel() {
-    if (!adminConfig.ablyKey || !session || typeof Ably === "undefined") return;
+    if (!dbConfig.ablyKey || !session || typeof Ably === "undefined") return;
     try {
       if (ablyClient) ablyClient.close();
-      ablyClient = new Ably.Realtime({ key: adminConfig.ablyKey, clientId: myClientId });
+      ablyClient = new Ably.Realtime({ key: dbConfig.ablyKey, clientId: myClientId });
       ablyChannel = ablyClient.channels.get("deux-places-" + session.spaceId);
       ablyChannel.subscribe("update", function (msg) {
         if (msg.clientId === myClientId) return; // notre propre action, déjà appliquée localement
@@ -2541,7 +2539,7 @@ function boot(INITIAL_STATE) {
     // --- Boutons temporaires de test, à retirer avant la mise en public ---
     var clearCacheBtn = document.getElementById("clear-cache-btn");
     if (clearCacheBtn) clearCacheBtn.addEventListener("click", function () {
-      if (!confirm("Vider le cache local (déconnexion + réglages admin de ce navigateur) et recharger la page ?")) return;
+      if (!confirm("Vider le cache local (déconnexion + réglages de ce navigateur) et recharger la page ?")) return;
       Object.keys(localStorage).forEach(function (k) {
         if (k.indexOf("dp-") === 0) localStorage.removeItem(k);
       });
@@ -3101,7 +3099,7 @@ function boot(INITIAL_STATE) {
     // --- Boutons temporaires de test, à retirer avant la mise en public ---
     var clearCacheBtn = document.getElementById("clear-cache-btn");
     if (clearCacheBtn) clearCacheBtn.addEventListener("click", function () {
-      if (!confirm("Vider le cache local (déconnexion + réglages admin de ce navigateur) et recharger la page ?")) return;
+      if (!confirm("Vider le cache local (déconnexion + réglages de ce navigateur) et recharger la page ?")) return;
       Object.keys(localStorage).forEach(function (k) {
         if (k.indexOf("dp-") === 0) localStorage.removeItem(k);
       });
@@ -8419,7 +8417,7 @@ function boot(INITIAL_STATE) {
   (async function start() {
     if (isShareRoute()) { render(); loadSharePage(); return; }
     render();
-    if (adminConfig.masterKey && adminConfig.indexBinId && session) {
+    if (dbConfig.masterKey && dbConfig.indexBinId && session) {
       await loadCurrentSpace();
     }
   })();
