@@ -67,6 +67,19 @@ window.__dpBlock=false;
     }
     var f=document.createElement("iframe");f.id="dp-splash";f.setAttribute("title","Deux Places");f.srcdoc=html;
     document.body.appendChild(f);root.classList.remove("dp-check");done();
+    if(mode==="maintenance"){
+      var t0=Date.now(),busy=false;
+      function recheck(){
+        if(busy||document.visibilityState!=="visible"||Date.now()-t0>3600000)return;
+        busy=true;
+        fetch("./statut.json?t="+Date.now(),{cache:"no-store"})
+          .then(function(r){return r.ok?r.json():null})
+          .then(function(n){busy=false;if(n&&n.ecran!=="maintenance")location.reload()})
+          .catch(function(){busy=false});
+      }
+      var iv=setInterval(function(){if(Date.now()-t0>3600000){clearInterval(iv);return}recheck()},60000);
+      document.addEventListener("visibilitychange",recheck);
+    }
     window.addEventListener("message",function(e){
       if(e.data==="dp-retry"){location.reload();return}
       if(e.data!=="dp-unlock")return;
