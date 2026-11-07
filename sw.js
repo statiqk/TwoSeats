@@ -23,7 +23,7 @@ self.addEventListener("push", function (event) {
     body: data.body || "",
     tag: data.tag || undefined,
     icon: "./icon-192.png",
-    badge: "./icon-192.png",
+    badge: "./badge-96.png",
     image: data.image || undefined,
     vibrate: data.vibrate || undefined,
     data: { url: data.url || "./" }
