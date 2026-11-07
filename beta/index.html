@@ -4777,7 +4777,7 @@ function boot(INITIAL_STATE) {
     "</div>";
   }
 
-  function renderAjouter() {
+  function renderAjouterOld() {
     var types = ITEM_TYPES;
     var html = "<div class=\"screen-head\"><p class=\"eyebrow\">Ajouter</p><h2 class=\"screen-title\">Partager un lien</h2></div>";
     // .ajouter-main-row met le formulaire et l'aperçu (voir plus bas) côte
@@ -4847,6 +4847,264 @@ function boot(INITIAL_STATE) {
     html += "</div>";
     html += "<div class=\"ajouter-suggestions-narrow\">" + renderSuggestionsBlock({ framed: true, centerLabel: true }) + "</div>";
     return html;
+  }
+
+
+  /* ---------- Ajouter : explorer (grille d'affiches) ---------- */
+  var axTab = "trend";        // trend | sorties | series
+  var axQuery = "";            // texte du champ (recherche ou lien)
+  var axResults = null;        // derniers résultats de recherche (réaffichés sans refetch après un render())
+  var axCache = {};            // onglet -> liste d'affiches
+  var axAdded = {};            // clé titre -> "pending" | id de l'item ajouté pendant cette visite
+  var axLink = null;           // { url, title, posterUrl, description, type, status } quand un lien est collé
+  var axSearchToken = 0;
+  var axSearchTimer = null;
+
+  function axKey(it) { return it.tmdbId ? (it.mediaType + ":" + it.tmdbId) : ("t:" + normalizeTitle(it.title) + ":" + (it.year || "")); }
+  function axIsUrl(v) { return /^(https?:\/\/|www\.)\S+$/i.test((v || "").trim()); }
+
+  async function axFetchBrowse(tab) {
+    if (axCache[tab]) return axCache[tab];
+    if (!TMDB_API_KEY) return [];
+    var k = "api_key=" + TMDB_API_KEY + "&language=fr-FR";
+    var plan = tab === "series"
+      ? [["https://api.themoviedb.org/3/trending/tv/week?" + k, "tv"], ["https://api.themoviedb.org/3/tv/on_the_air?" + k, "tv"]]
+      : tab === "sorties"
+        ? [["https://api.themoviedb.org/3/movie/now_playing?" + k + "&region=FR", "movie"], ["https://api.themoviedb.org/3/tv/on_the_air?" + k, "tv"]]
+        : [["https://api.themoviedb.org/3/trending/all/week?" + k, null], ["https://api.themoviedb.org/3/trending/all/week?" + k + "&page=2", null]];
+    var lists = await Promise.all(plan.map(function (pl) {
+      return fetch(pl[0]).then(function (r) { return r.ok ? r.json() : { results: [] }; }).catch(function () { return { results: [] }; })
+        .then(function (d) { return (d.results || []).map(function (r) { return mapTmdbItem(r, pl[1]); }); });
+    }));
+    var seen = {}, out = [];
+    // entrelacé : un film, une série, un film… plutôt que tous les films d'abord
+    for (var i = 0; i < 40; i++) {
+      lists.forEach(function (l) {
+        var it = l[i];
+        if (!it || !it.posterUrl) return;
+        var key = axKey(it);
+        if (seen[key]) return;
+        seen[key] = true;
+        if (alreadyInWatchlist(it)) return;
+        out.push(it);
+      });
+    }
+    axCache[tab] = out.slice(0, 24);
+    return axCache[tab];
+  }
+
+  function axCardHtml(it, idx) {
+    var key = axKey(it);
+    var st = axAdded[key];
+    return "<div class=\"ax-card\" data-ax-i=\"" + idx + "\" data-ax-key=\"" + escapeHtml(key) + "\" role=\"button\" tabindex=\"0\">" +
+      (it.posterUrl ? "<img src=\"" + escapeHtml(it.posterUrl) + "\" alt=\"\" loading=\"lazy\" />" : "<span class=\"ax-noimg\">" + escapeHtml(it.title) + "</span>") +
+      "<span class=\"ax-scrim\" aria-hidden=\"true\"></span>" +
+      (it.year ? "<span class=\"ax-year\">" + escapeHtml(it.year) + "</span>" : "") +
+      "<span class=\"ax-t\">" + escapeHtml(it.title) + "</span>" +
+      "<button type=\"button\" class=\"ax-plus" + (st ? " ax-plus--done" : "") + "\" data-ax-add aria-label=\"" + (st ? "Ajouté" : "Ajouter") + " " + escapeHtml(it.title) + "\">" + (st === "pending" ? "…" : st ? "✓" : "+") + "</button>" +
+    "</div>";
+  }
+
+  function axHideAddedToast() {
+    clearTimeout(axToastTimer);
+    var el = document.getElementById("undo-toast");
+    if (el) el.remove();
+  }
+  var axToastTimer = null;
+  function axShowAddedToast(id, title, key) {
+    axHideAddedToast();
+    var el = document.createElement("div");
+    el.id = "undo-toast";
+    el.setAttribute("role", "status");
+    el.innerHTML = "<span>« " + escapeHtml(title) + " » ajouté</span><button type=\"button\">Annuler</button><span class=\"ut-bar\"></span>";
+    el.querySelector("button").addEventListener("click", function () {
+      axHideAddedToast();
+      delete axAdded[key];
+      // Retrait silencieux : l'ajout vient d'avoir lieu, pas de notification « supprimé » pour le binôme.
+      persist(function (s) {
+        if (Array.isArray(s.events)) s.events = s.events.filter(function (e) { return e.itemId !== id; });
+        s.items = s.items.filter(function (i) { return i.id !== id; });
+      });
+      invalidateSuggestionsCache();
+    });
+    document.body.appendChild(el);
+    axToastTimer = setTimeout(axHideAddedToast, 5000);
+  }
+
+  // Ajout direct d'un titre de la grille — envie = true pose aussi mon « Envie ! » tout de suite.
+  function axAddItem(item, envie) {
+    var key = axKey(item);
+    if (axAdded[key]) return;
+    axAdded[key] = "pending";
+    var card = document.querySelector(".ax-card[data-ax-key=\"" + key.replace(/"/g, "") + "\"] .ax-plus");
+    if (card) { card.textContent = "…"; card.classList.add("ax-plus--done"); }
+    addSuggestionDirectly(item, null, function (created) {
+      axAdded[key] = created.id;
+      if (envie) castVote(created.id, true);
+      axShowAddedToast(created.id, item.title, key);
+    });
+  }
+
+  function renderAjouter() {
+    if (lastRenderedTab !== "ajouter") { axQuery = ""; axResults = null; axCache = {}; axAdded = {}; axLink = null; axTab = "trend"; }
+    var html = "<div class=\"screen-head\"><p class=\"eyebrow\">Ajouter</p><h2 class=\"screen-title\">Qu'est-ce qu'on ajoute ?</h2></div>";
+    html += "<div class=\"ax-wrap\">";
+    html += "<div class=\"ax-search\"><svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" aria-hidden=\"true\"><circle cx=\"11\" cy=\"11\" r=\"7\"></circle><path d=\"M20 20l-3.5-3.5\"></path></svg>" +
+      "<input type=\"text\" id=\"ax-q\" placeholder=\"Un film, une série, ou colle un lien…\" autocomplete=\"off\" autocapitalize=\"off\" enterkeyhint=\"search\" value=\"" + escapeHtml(axQuery) + "\" />" +
+      "<button type=\"button\" id=\"ax-clear\" aria-label=\"Effacer\"" + (axQuery ? "" : " hidden") + ">&times;</button></div>";
+    html += "<div class=\"ax-chips\" id=\"ax-chips\"" + (axQuery ? " hidden" : "") + ">" +
+      [["trend", "Tendances"], ["sorties", "Sorties"], ["series", "Séries"]].map(function (c) {
+        return "<button type=\"button\" class=\"ax-chip" + (axTab === c[0] ? " ax-chip--on" : "") + "\" data-ax-tab=\"" + c[0] + "\">" + c[1] + "</button>";
+      }).join("") + "</div>";
+    html += "<div id=\"ax-body\"></div></div>";
+    return html;
+  }
+
+  function bindAjouter() {
+    var input = document.getElementById("ax-q");
+    var clearBtn = document.getElementById("ax-clear");
+    var chips = document.getElementById("ax-chips");
+    var body = document.getElementById("ax-body");
+    if (!input || !body) return;
+    var currentList = [];
+
+    function gridHtml(list) {
+      currentList = list;
+      return "<div class=\"ax-grid\">" + list.map(axCardHtml).join("") + "</div>";
+    }
+    function showList(list, emptyMsg) {
+      body.innerHTML = list.length ? gridHtml(list) : "<p class=\"ax-empty\">" + escapeHtml(emptyMsg) + "</p>";
+    }
+    function showBrowse() {
+      chips.hidden = false;
+      if (axCache[axTab]) { showList(axCache[axTab], "Rien à afficher pour l'instant."); return; }
+      body.innerHTML = "<p class=\"ax-empty\">Chargement…</p>";
+      var tab = axTab;
+      axFetchBrowse(tab).then(function (list) {
+        if (tab !== axTab || axQuery) return;
+        showList(list, "Rien à afficher pour l'instant — utilise la recherche.");
+      });
+    }
+    function showLink() {
+      chips.hidden = true;
+      var l = axLink;
+      if (!l) { body.innerHTML = ""; return; }
+      var typeBtns = ITEM_TYPES.map(function (t) {
+        return "<button type=\"button\" class=\"pill-btn" + (l.type === t ? " pill-btn--active" : "") + "\" data-ax-type=\"" + t + "\">" + TYPE_LABEL[t] + "</button>";
+      }).join("");
+      body.innerHTML = "<div class=\"ax-link\">" +
+        "<div class=\"ax-link-head\">" +
+          (l.posterUrl ? "<img src=\"" + escapeHtml(l.posterUrl) + "\" alt=\"\" />" : "<span class=\"ax-link-ph\">🔗</span>") +
+          "<div class=\"ax-link-main\"><input type=\"text\" id=\"ax-link-title\" maxlength=\"120\" placeholder=\"Titre\" value=\"" + escapeHtml(l.title || "") + "\" />" +
+          "<p class=\"ax-link-st\">" + escapeHtml(l.status || "") + "</p></div></div>" +
+        "<div class=\"pill-choice\" id=\"ax-link-types\">" + typeBtns + "</div>" +
+        "<div class=\"ax-link-actions\"><button type=\"button\" class=\"btn btn--primary\" data-ax-link-go=\"0\">Partager</button>" +
+        "<button type=\"button\" class=\"btn\" data-ax-link-go=\"1\">♥ Envie !</button></div></div>";
+    }
+    function addLink(envie) {
+      var l = axLink; if (!l) return;
+      var titleEl = document.getElementById("ax-link-title");
+      var title = (titleEl ? titleEl.value : l.title || "").trim();
+      if (!title) { if (titleEl) titleEl.focus(); return; }
+      var url = l.url;
+      var created = null;
+      persist(function (st) {
+        var it = { id: uid(), url: url, title: title, year: null, description: l.description || null, posterUrl: l.posterUrl || null,
+          watchProviders: null, trailer: null, certification: null, genres: null, tmdbId: null, mediaType: null,
+          type: l.type, addedBy: myName, createdAt: Date.now(), watched: false, votes: envie ? (function () { var v = {}; v[myName] = true; return v; })() : {}, ratings: {} };
+        created = it;
+        st.items.push(it);
+        pushEvent(st, "added", it);
+      });
+      invalidateSuggestionsCache();
+      axLink = null; axQuery = ""; axResults = null;
+      if (created) axShowAddedToast(created.id, title, "link:" + created.id);
+      render();
+    }
+
+    function setQuery(v) {
+      axQuery = v;
+      clearBtn.hidden = !v;
+      clearTimeout(axSearchTimer);
+      axSearchToken++;
+      var term = v.trim();
+      if (!term) { axResults = null; axLink = null; showBrowse(); return; }
+      if (axIsUrl(term)) {
+        var url = /^https?:\/\//i.test(term) ? term : "https://" + term;
+        if (axLink && axLink.url === url) { showLink(); return; }
+        var guess = guessTypeFromUrl(url) || "movie";
+        axLink = { url: url, title: "", posterUrl: null, description: null, type: guess, status: "Récupération des infos…" };
+        showLink();
+        var tok = axSearchToken;
+        fetchLinkMetadata(url).then(function (meta) {
+          if (tok !== axSearchToken || !axLink || axLink.url !== url) return;
+          axLink.title = meta.title || ""; axLink.posterUrl = meta.posterUrl || null; axLink.description = meta.description || null;
+          axLink.status = meta.title ? "✓ Reconnu depuis le lien" : "Aucune info trouvée, renseigne le titre.";
+          showLink();
+        }).catch(function () {
+          if (tok !== axSearchToken || !axLink) return;
+          axLink.status = "Ce site bloque la lecture automatique, renseigne le titre.";
+          showLink();
+        });
+        return;
+      }
+      axLink = null;
+      chips.hidden = true;
+      if (term.length < 2) { body.innerHTML = ""; return; }
+      axSearchTimer = setTimeout(function () {
+        var token = ++axSearchToken;
+        body.innerHTML = "<p class=\"ax-empty\">Recherche…</p>";
+        var keep = function (list) { return list.filter(function (it) { return !alreadyInWatchlist(it) || axAdded[axKey(it)]; }); };
+        searchMovieDB(term, function (partial) {
+          if (token !== axSearchToken) return;
+          var l = keep(partial); if (l.length) { axResults = l; showList(l, ""); }
+        }).then(function (items) {
+          if (token !== axSearchToken) return;
+          axResults = keep(items);
+          showList(axResults, "Rien trouvé pour « " + term + " ». Essaie un autre titre ou colle un lien.");
+        }).catch(function () {
+          if (token !== axSearchToken) return;
+          body.innerHTML = "<p class=\"ax-empty\">Recherche indisponible. Colle un lien à la place.</p>";
+        });
+      }, 250);
+    }
+
+    // État initial : reconstruit depuis ce qui survit à un render() (ajout → persist → render).
+    if (axLink && axIsUrl(axQuery)) showLink();
+    else if (axQuery.trim() && axResults) { chips.hidden = true; showList(axResults, "Rien trouvé."); }
+    else if (axQuery.trim()) setQuery(axQuery);
+    else showBrowse();
+
+    input.addEventListener("input", function () { setQuery(input.value); });
+    input.addEventListener("paste", function () { setTimeout(function () { setQuery(input.value); }, 0); });
+    clearBtn.addEventListener("click", function () { input.value = ""; setQuery(""); input.focus(); });
+    chips.addEventListener("click", function (e) {
+      var b = e.target.closest("[data-ax-tab]"); if (!b) return;
+      axTab = b.getAttribute("data-ax-tab");
+      chips.querySelectorAll(".ax-chip").forEach(function (c) { c.classList.toggle("ax-chip--on", c === b); });
+      showBrowse();
+    });
+    body.addEventListener("click", function (e) {
+      var go = e.target.closest("[data-ax-link-go]");
+      if (go) { addLink(go.getAttribute("data-ax-link-go") === "1"); return; }
+      var tp = e.target.closest("[data-ax-type]");
+      if (tp && axLink) {
+        axLink.type = tp.getAttribute("data-ax-type");
+        var te = document.getElementById("ax-link-title"); if (te) axLink.title = te.value;
+        showLink(); return;
+      }
+      var card = e.target.closest(".ax-card"); if (!card) return;
+      var it = currentList[parseInt(card.getAttribute("data-ax-i"), 10)]; if (!it) return;
+      if (e.target.closest("[data-ax-add]")) { axAddItem(it, false); return; }
+      if (axAdded[axKey(it)]) return;
+      if (it.tmdbId) openSuggestionPreview(it, { onAdd: axAddItem });
+      else axAddItem(it, false);
+    });
+    body.addEventListener("keydown", function (e) {
+      if (e.key !== "Enter" && e.key !== " ") return;
+      var card = e.target.classList && e.target.classList.contains("ax-card") ? e.target : null; if (!card) return;
+      e.preventDefault(); card.click();
+    });
   }
 
   /* ---------- bindings ---------- */
@@ -5038,7 +5296,7 @@ function boot(INITIAL_STATE) {
   // affiche ouvre une fiche (synopsis, genres, âge, casting, plateformes,
   // bande-annonce) au lieu d'ajouter tout de suite ; « Ajouter à la liste »
   // lance alors le même ajout direct qu'avant (addSuggestionDirectly).
-  function openSuggestionPreview(item) {
+  function openSuggestionPreview(item, opts) {
     closeSuggestionPreview();
     if (!document.getElementById("sugg-preview-css")) {
       var st = document.createElement("style");
@@ -5081,14 +5339,16 @@ function boot(INITIAL_STATE) {
       (item.description ? "<p class=\"sp-desc\">" + escapeHtml(item.description) + "</p>" : "") +
       "<div data-sp=\"cast\"></div><div data-sp=\"prov\"></div>" +
       "<div class=\"sp-actions\"><button type=\"button\" class=\"ajouter-trailer-btn\" data-sp-trailer hidden><span class=\"ajouter-trailer-icon\"><svg viewBox=\"0 0 24 24\" fill=\"currentColor\" aria-hidden=\"true\"><path d=\"M8 5v14l11-7z\"></path></svg></span><span>Bande-annonce</span></button>" +
-      "<button type=\"button\" class=\"btn btn--primary\" data-sp-add>＋ Ajouter à la liste</button></div></div>";
+      "<button type=\"button\" class=\"btn btn--primary\" data-sp-add>＋ Ajouter à la liste</button>" +
+      (opts && opts.onAdd ? "<button type=\"button\" class=\"btn\" data-sp-envie>♥ Ajouter + Envie</button>" : "") + "</div></div>";
     document.body.appendChild(ov);
     var onKey = function (e) { if (e.key === "Escape") closeSuggestionPreview(); };
     ov._onKey = onKey;
     document.addEventListener("keydown", onKey);
     ov.addEventListener("click", function (e) {
       if (e.target === ov || e.target.closest(".sp-close")) { closeSuggestionPreview(); return; }
-      if (e.target.closest("[data-sp-add]")) { closeSuggestionPreview(); addSuggestionDirectly(item, null); return; }
+      if (e.target.closest("[data-sp-envie]")) { closeSuggestionPreview(); if (opts && opts.onAdd) opts.onAdd(item, true); return; }
+      if (e.target.closest("[data-sp-add]")) { closeSuggestionPreview(); if (opts && opts.onAdd) opts.onAdd(item, false); else addSuggestionDirectly(item, null); return; }
       if (e.target.closest("[data-sp-trailer]") && trailerKey) openTrailerModal(trailerKey);
     });
     // Détails chargés après l'ouverture : la fiche s'affiche tout de suite avec ce qu'on a déjà.
@@ -5146,7 +5406,7 @@ function boot(INITIAL_STATE) {
   // any other — cardEl gets a brief "Ajout…" state while that's in flight
   // since it can take a moment, then persist()'s render() replaces this
   // whole empty-state screen with the now-nonempty queue anyway.
-  function addSuggestionDirectly(item, cardEl) {
+  function addSuggestionDirectly(item, cardEl, onAdded) {
     if (cardEl) {
       cardEl.disabled = true;
       var titleEl = cardEl.querySelector(".suggestion-title");
@@ -5170,6 +5430,7 @@ function boot(INITIAL_STATE) {
       fetchGenres(mediaType, tmdbId)
     ]).then(function (results) {
       var watchProviders = results[0], trailer = results[1], certification = results[2], genres = results[3];
+      var createdItem = null;
       persist(function (s) {
         var newItem = {
           id: uid(),
@@ -5191,9 +5452,11 @@ function boot(INITIAL_STATE) {
           votes: {},
           ratings: {}
         };
+        createdItem = newItem;
         s.items.push(newItem);
         pushEvent(s, "added", newItem);
       });
+      if (onAdded && createdItem) onAdded(createdItem);
       // This item was a suggestion a moment ago — fetchSuggestions() itself
       // filters out anything already in the watchlist, so the cached list
       // (see bindSuggestions) would keep showing it as pickable again until
@@ -6016,7 +6279,7 @@ function boot(INITIAL_STATE) {
     suggestionsFetchPromise.then(populate);
   }
 
-  function bindAjouter() {
+  function bindAjouterOld() {
     var chosenType = "movie";
     var typeSetManually = false;
     var titleTouched = false;
@@ -9021,6 +9284,37 @@ function boot(INITIAL_STATE) {
 ".mx-sheet .stub{max-width:none;border:0;box-shadow:none;background:transparent;}" +
 ".mx-sheet-x{position:absolute;right:.7rem;top:.5rem;z-index:3;width:2.1rem;height:2.1rem;border-radius:50%;border:0;background:var(--surface-2);color:var(--ink);font-size:1.3rem;line-height:1;cursor:pointer;}" +
 "body:has(.mx-sheet-ov){overflow:hidden;}" +
+".ax-wrap{max-width:560px;margin:0 auto;}" +
+".ax-search{display:flex;align-items:center;gap:.6rem;background:var(--surface);border:1px solid var(--border);border-radius:1rem;padding:.2rem .9rem;color:var(--ink-dim);}" +
+".ax-search:focus-within{border-color:var(--accent);color:var(--ink);}" +
+".ax-search svg{width:1.15rem;height:1.15rem;flex:none;}" +
+".ax-search input{flex:1;min-width:0;background:none;border:0;outline:0;color:var(--ink);font:inherit;font-size:1rem;padding:.75rem 0;}" +
+".ax-search button{background:none;border:0;color:var(--ink-dim);font-size:1.5rem;line-height:1;cursor:pointer;padding:0 .2rem;}" +
+".ax-search button[hidden]{display:none;}" +
+".ax-chips{display:flex;gap:.5rem;margin:.9rem 0 .9rem;overflow-x:auto;scrollbar-width:none;}" +
+".ax-chips[hidden]{display:none;}" +
+".ax-chip{flex:none;border:1px solid var(--border);background:var(--surface);color:var(--ink);border-radius:999px;padding:.45rem .95rem;font:inherit;font-size:.85rem;cursor:pointer;}" +
+".ax-chip--on{background:var(--accent);color:var(--accent-ink);border-color:var(--accent);font-weight:700;}" +
+"#ax-body{margin-top:.9rem;}" +
+".ax-chips:not([hidden]) + #ax-body{margin-top:0;}" +
+".ax-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:.55rem;}" +
+".ax-card{position:relative;aspect-ratio:2/3;border-radius:.7rem;overflow:hidden;background:var(--surface-2);cursor:pointer;-webkit-tap-highlight-color:transparent;}" +
+".ax-card img{width:100%;height:100%;object-fit:cover;display:block;}" +
+".ax-noimg{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;text-align:center;padding:.6rem;font-family:'Fraunces',serif;font-size:.9rem;color:var(--ink-dim);}" +
+".ax-scrim{position:absolute;left:0;right:0;bottom:0;height:55%;background:linear-gradient(to top,rgba(0,0,0,.82),transparent);pointer-events:none;}" +
+".ax-t{position:absolute;left:.45rem;right:.45rem;bottom:.4rem;color:#fff;font-size:.74rem;font-weight:600;line-height:1.15;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;}" +
+".ax-year{position:absolute;left:.4rem;top:.4rem;font-family:'Space Mono',monospace;font-size:.6rem;color:#fff;background:rgba(0,0,0,.55);border-radius:999px;padding:.12rem .45rem;}" +
+".ax-plus{position:absolute;top:.35rem;right:.35rem;width:2rem;height:2rem;border-radius:50%;border:0;background:var(--accent);color:var(--accent-ink);font-size:1.35rem;font-weight:700;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0;box-shadow:0 2px 8px rgba(0,0,0,.4);}" +
+".ax-plus--done{background:#6fd6a0;color:#0c2016;font-size:1.05rem;}" +
+".ax-empty{text-align:center;color:var(--ink-dim);font-size:.9rem;padding:2rem 0;}" +
+".ax-link{background:var(--surface);border:1px solid var(--border);border-radius:1.1rem;padding:1rem;}" +
+".ax-link-head{display:flex;gap:.9rem;}" +
+".ax-link-head img,.ax-link-ph{width:76px;aspect-ratio:2/3;border-radius:.6rem;object-fit:cover;flex:none;background:var(--surface-2);display:flex;align-items:center;justify-content:center;font-size:1.6rem;}" +
+".ax-link-main{flex:1;min-width:0;}" +
+".ax-link-main input{width:100%;background:var(--surface-2);border:1px solid var(--border);border-radius:.7rem;color:var(--ink);font:inherit;font-size:1rem;padding:.6rem .75rem;box-sizing:border-box;}" +
+".ax-link-st{font-size:.78rem;color:var(--ink-dim);margin:.5rem 0 0;}" +
+"#ax-link-types{margin:.9rem 0 .2rem;}" +
+".ax-link-actions{display:flex;gap:.6rem;margin-top:.9rem;}.ax-link-actions .btn{flex:1;}" +
 ".tabbar{position:fixed;z-index:10;bottom:0;left:0;right:0;display:flex;justify-content:center;gap:.25rem;" +
   "background:var(--surface);border-top:1px dashed var(--border);padding:.7rem 1rem calc(.7rem + env(safe-area-inset-bottom));" +
   // 5 onglets tiennent large sur la plupart des écrans, mais sur les très
