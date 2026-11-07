@@ -1285,7 +1285,22 @@ function boot(INITIAL_STATE) {
   function notifKeyOfType(type) { return type === "unvote" ? "vote" : type; }
   function notifTypeOn(st, type) {
     var key = notifKeyOfType(type), p = notifPrefsOf(st);
+    if (p.pause === true) return false; // « Tout couper »
     if (p[key] === true || p[key] === false) return p[key];
+    for (var i = 0; i < NOTIF_TYPES.length; i++) if (NOTIF_TYPES[i].k === key) return NOTIF_TYPES[i].def;
+    return true;
+  }
+  // Réglage « push » d'un type (séparé de la cloche) ; sans choix propre, il suit la cloche — comme avant.
+  function notifPushTypeOn(st, key) {
+    var p = notifPrefsOf(st);
+    if (typeof p["push_" + key] === "boolean") return p["push_" + key];
+    if (typeof p[key] === "boolean") return p[key];
+    for (var i = 0; i < NOTIF_TYPES.length; i++) if (NOTIF_TYPES[i].k === key) return NOTIF_TYPES[i].def;
+    return true;
+  }
+  function notifRawTypeOn(st, key) {
+    var p = notifPrefsOf(st);
+    if (typeof p[key] === "boolean") return p[key];
     for (var i = 0; i < NOTIF_TYPES.length; i++) if (NOTIF_TYPES[i].k === key) return NOTIF_TYPES[i].def;
     return true;
   }
@@ -2510,6 +2525,37 @@ function boot(INITIAL_STATE) {
      (selon ses réglages par type). Le service worker (sw.js) l'affiche. */
   var VAPID_PUBLIC_KEY = "BLx4dMv69EvcbqNa1n58KhOJK8L-VECcKCEX2_uNv04LTcKsFd1hcHTN0dBAhL_MprjwMH5OwgFnhF21T7xJuuY";
   var pushOn = false, pushBusy = false, pushHint = "";
+  var notifSecOpen = "device"; // une seule section du menu ouverte à la fois
+  function parisHour() {
+    try { return Number(new Intl.DateTimeFormat("en-GB", { hour: "numeric", hourCycle: "h23", timeZone: "Europe/Paris" }).format(new Date())); } catch (e) { return new Date().getHours(); }
+  }
+  function pushStatus() {
+    var ios = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+    var standalone = (window.matchMedia && window.matchMedia("(display-mode: standalone)").matches) || navigator.standalone;
+    if (!pushSupported()) {
+      if (ios && !standalone) return { k: "bad", t: "Pas sur l'écran d'accueil", s: "Sur iPhone, installe l'appli (Partager → Sur l'écran d'accueil) pour recevoir les push", short: "Non installée" };
+      return { k: "bad", t: "Non pris en charge", s: "Ce navigateur ne gère pas les notifications push", short: "Non prises en charge" };
+    }
+    if (Notification.permission === "denied") return { k: "warn", t: "Bloquées par le navigateur", s: "Autorise-les dans les réglages du site", short: "Bloquées" };
+    if (pushOn) {
+      var p = notifPrefsOf(state), h = parisHour();
+      if (p.pause === true) return { k: "warn", t: "En pause", s: "« Tout couper » est activé", short: "En pause", on: true };
+      if (p.quiet === true && (h >= 23 || h < 8)) return { k: "warn", t: "Heures calmes en cours", s: "Reprise à 8 h", short: "Heures calmes", on: true };
+      return { k: "ok", t: "Notifications actives", s: "Sur cet appareil", short: "Actives", on: true };
+    }
+    return { k: "off", t: "Désactivées sur cet appareil", s: "Active-les pour être prévenu appli fermée", short: "Désactivées" };
+  }
+  async function pushTest() {
+    if (pushBusy) return;
+    pushBusy = true; pushHint = "";
+    try {
+      var r = await sb.functions.invoke("send-push", { body: { action: "test" } });
+      if (r.error) throw r.error;
+      pushHint = r.data && r.data.sent > 0 ? "Notification de test envoyée — elle arrive dans quelques secondes." : "Aucun appareil abonné : active d'abord les notifications.";
+    } catch (e) { console.error("push test :", e); pushHint = "Le test n'a pas pu partir, réessaie."; }
+    pushBusy = false;
+    updateNotifPanelAndBadge();
+  }
   function pushSupported() { return "serviceWorker" in navigator && "PushManager" in window && "Notification" in window; }
   function urlB64ToUint8Array(b64) {
     var pad = "=".repeat((4 - b64.length % 4) % 4);
@@ -3571,24 +3617,51 @@ function boot(INITIAL_STATE) {
     }
   }
   var GEAR_SVG = "<svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><circle cx=\"12\" cy=\"12\" r=\"3\"></circle><path d=\"M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z\"></path></svg>";
+  function notifSw(on, attrs, label) {
+    return "<button type=\"button\" class=\"notif-sw" + (on ? " notif-sw--on" : "") + "\" role=\"switch\" aria-checked=\"" + on + "\" aria-label=\"" + escapeHtml(label) + "\" " + attrs + "></button>";
+  }
+  function notifSection(id, icon, title, summary, inner) {
+    var open = notifSecOpen === id;
+    return "<div class=\"notif-sec" + (open ? " notif-sec--open" : "") + "\">" +
+      "<button type=\"button\" class=\"notif-sec-hd\" data-nact=\"sec\" data-sec=\"" + id + "\" aria-expanded=\"" + open + "\">" +
+        "<span class=\"notif-set-ic\" aria-hidden=\"true\">" + icon + "</span><span class=\"notif-sec-t\">" + escapeHtml(title) + "</span>" +
+        "<span class=\"notif-sec-sum\">" + escapeHtml(summary) + "</span><span class=\"notif-sec-ch\" aria-hidden=\"true\">" + (open ? "▾" : "▸") + "</span></button>" +
+      (open ? "<div class=\"notif-sec-bd\">" + inner + "</div>" : "") + "</div>";
+  }
   function notifSettingsHtml() {
-    var rows = NOTIF_TYPES.map(function (t) {
-      var on = notifTypeOn(state, t.k);
-      return "<div class=\"notif-set-row\"><span class=\"notif-set-ic\" aria-hidden=\"true\">" + t.icon + "</span>" +
-        "<span class=\"notif-set-tx\">" + escapeHtml(t.label) + "<small>" + escapeHtml(t.desc) + "</small></span>" +
-        "<button type=\"button\" class=\"notif-sw" + (on ? " notif-sw--on" : "") + "\" role=\"switch\" aria-checked=\"" + on +
-          "\" aria-label=\"" + escapeHtml(t.label) + "\" data-nact=\"pref\" data-key=\"" + t.k + "\"></button></div>";
+    var LIVE = ["added", "vote", "watched", "rated", "removed", "match"], SCHED = ["remind", "weekend", "avail", "rate"];
+    var T = function (k) { return NOTIF_TYPES.filter(function (t) { return t.k === k; })[0]; };
+    var p = notifPrefsOf(state), st = pushStatus();
+    // — Cet appareil
+    var dev = "<div class=\"notif-st notif-st--" + st.k + "\"><span class=\"notif-st-dot\"></span><span class=\"notif-set-tx\">" + escapeHtml(st.t) + "<small>" + escapeHtml(st.s) + "</small></span>" +
+      (st.on ? "<button type=\"button\" class=\"notif-st-btn\" data-nact=\"ptest\">Tester</button>" : "") + "</div>" +
+      (pushHint ? "<p class=\"notif-set-hint\">" + escapeHtml(pushHint) + "</p>" : "") +
+      "<div class=\"notif-set-row\"><span class=\"notif-set-ic\" aria-hidden=\"true\">📲</span><span class=\"notif-set-tx\">Push sur cet appareil<small>Être prévenu même appli fermée</small></span>" + notifSw(pushOn, "data-nact=\"push\"", "Notifications sur cet appareil") + "</div>" +
+      "<div class=\"notif-set-row\"><span class=\"notif-set-ic\" aria-hidden=\"true\">🌙</span><span class=\"notif-set-tx\">Heures calmes<small>Aucune alerte de 23 h à 8 h</small></span>" + notifSw(p.quiet === true, "data-nact=\"pref\" data-key=\"quiet\"", "Heures calmes") + "</div>";
+    // — En direct (cloche / push)
+    var live = "<div class=\"notif-cols\"><span>Cloche</span><span>Push</span></div>" + LIVE.map(function (k) {
+      var t = T(k);
+      return "<div class=\"notif-set-row\"><span class=\"notif-set-ic\" aria-hidden=\"true\">" + t.icon + "</span><span class=\"notif-set-tx\">" + escapeHtml(t.label) + "<small>" + escapeHtml(t.desc) + "</small></span>" +
+        "<span class=\"notif-two\">" + notifSw(notifRawTypeOn(state, k), "data-nact=\"pref\" data-key=\"" + k + "\"", t.label + " dans la cloche") +
+        notifSw(notifPushTypeOn(state, k), "data-nact=\"pushpref\" data-key=\"" + k + "\"", t.label + " en push") + "</span></div>";
     }).join("");
+    var liveOn = LIVE.filter(function (k) { return notifRawTypeOn(state, k) || notifPushTypeOn(state, k); }).length;
+    // — Rappels et suggestions (push uniquement)
+    var sched = SCHED.map(function (k) {
+      var t = T(k);
+      return "<div class=\"notif-set-row\"><span class=\"notif-set-ic\" aria-hidden=\"true\">" + t.icon + "</span><span class=\"notif-set-tx\">" + escapeHtml(t.label) + "<small>" + escapeHtml(t.desc) + "</small></span>" +
+        notifSw(notifRawTypeOn(state, k), "data-nact=\"pref\" data-key=\"" + k + "\"", t.label) + "</div>";
+    }).join("");
+    var schedOn = SCHED.filter(function (k) { return notifRawTypeOn(state, k); }).length;
+    // — Cloche
     var gOn = notifGroupOn(state);
-    var pushRow = "<div class=\"notif-set-row\"><span class=\"notif-set-ic\" aria-hidden=\"true\">📲</span>" +
-        "<span class=\"notif-set-tx\">Sur cet appareil<small>Être prévenu même appli fermée</small></span>" +
-        "<button type=\"button\" class=\"notif-sw" + (pushOn ? " notif-sw--on" : "") + "\" role=\"switch\" aria-checked=\"" + pushOn + "\" aria-label=\"Notifications sur cet appareil\" data-nact=\"push\"></button></div>" +
-        (pushHint ? "<p class=\"notif-set-hint\">" + escapeHtml(pushHint) + "</p>" : "");
-    return "<div class=\"notif-set\">" + pushRow + rows +
-      "<div class=\"notif-set-row\"><span class=\"notif-set-ic\" aria-hidden=\"true\">🗂️</span>" +
-        "<span class=\"notif-set-tx\">Regrouper<small>Les actions du même type à la suite</small></span>" +
-        "<button type=\"button\" class=\"notif-sw" + (gOn ? " notif-sw--on" : "") + "\" role=\"switch\" aria-checked=\"" + gOn +
-          "\" aria-label=\"Regrouper\" data-nact=\"pref\" data-key=\"group\"></button></div>" +
+    var bell = "<div class=\"notif-set-row\"><span class=\"notif-set-ic\" aria-hidden=\"true\">🗂️</span><span class=\"notif-set-tx\">Regrouper dans la cloche<small>Les actions du même type à la suite</small></span>" + notifSw(gOn, "data-nact=\"pref\" data-key=\"group\"", "Regrouper dans la cloche") + "</div>";
+    return "<div class=\"notif-set\">" +
+      notifSection("device", "📲", "Cet appareil", st.short + (p.quiet === true ? " · calme" : ""), dev) +
+      notifSection("live", "⚡", "En direct", liveOn + " sur " + LIVE.length + " actifs", live) +
+      notifSection("sched", "🔔", "Rappels et suggestions", schedOn + " sur " + SCHED.length + " actifs", sched) +
+      notifSection("bell", "🔔", "Cloche", gOn ? "Regroupement activé" : "Regroupement coupé", bell) +
+      "<div class=\"notif-kill\"><span class=\"notif-set-tx\">Tout couper<small>Met en pause la cloche et les push</small></span>" + notifSw(p.pause === true, "data-nact=\"pref\" data-key=\"pause\"", "Tout couper") + "</div>" +
       "</div>";
   }
   function renderNotifPanel(log) {
@@ -6622,12 +6695,20 @@ function boot(INITIAL_STATE) {
       var el = e.target.closest && e.target.closest("[data-nact]");
       if (!el || !notifOpen) return false;
       var act = el.getAttribute("data-nact");
-      if (act === "settings") { notifSettingsOpen = !notifSettingsOpen; if (notifSettingsOpen) pushRefreshState().then(updateNotifPanelAndBadge); }
+      if (act === "settings") { notifSettingsOpen = !notifSettingsOpen; if (notifSettingsOpen) { notifSecOpen = "device"; pushHint = ""; pushRefreshState().then(updateNotifPanelAndBadge); } }
       else if (act === "push") pushToggle();
       else if (act === "pref") {
         var key = el.getAttribute("data-key");
-        var cur = key === "group" ? notifGroupOn(state) : notifTypeOn(state, key);
+        var cur = key === "group" ? notifGroupOn(state) : (key === "pause" || key === "quiet") ? notifPrefsOf(state)[key] === true : notifRawTypeOn(state, key);
         setNotifPref(key, !cur);
+      } else if (act === "pushpref") {
+        var pk = el.getAttribute("data-key");
+        setNotifPref("push_" + pk, !notifPushTypeOn(state, pk));
+      } else if (act === "sec") {
+        var sid = el.getAttribute("data-sec");
+        notifSecOpen = notifSecOpen === sid ? "" : sid;
+      } else if (act === "ptest") {
+        pushTest();
       } else if (act === "toggle") {
         var gid = el.getAttribute("data-gid");
         var evs = notifEventsFor(state), grp = notifGroups(evs, notifGroupOn(state)).filter(function (g) { return g.first.id === gid; })[0];
@@ -6891,7 +6972,23 @@ function boot(INITIAL_STATE) {
 ".notif-item-sub{display:flex;flex-direction:column;gap:.1rem;font-size:.74rem;color:var(--ink-dim);}" +
 ".notif-item-sub i{font-style:normal;}" +
 ".notif-item-chev{margin-left:auto;align-self:center;color:var(--ink-dim);font-size:.8rem;flex-shrink:0;}" +
-".notif-set{max-height:340px;overflow-y:auto;padding:0 1rem .6rem;}" +
+".notif-set{max-height:420px;overflow-y:auto;padding:.2rem 1rem .6rem;}" +
+".notif-sec{border-bottom:1px solid var(--border);}" +
+".notif-sec-hd{display:flex;align-items:center;gap:.5rem;width:100%;background:none;border:0;padding:.7rem 0;cursor:pointer;color:var(--ink);font:inherit;font-size:.82rem;text-align:left;text-transform:none;letter-spacing:0;}" +
+".notif-sec-t{font-weight:700;white-space:nowrap;}" +
+".notif-sec-sum{margin-left:auto;font-size:.68rem;color:var(--ink-dim);text-align:right;}" +
+".notif-sec-ch{color:var(--accent);font-size:.75rem;width:.9rem;text-align:center;}" +
+".notif-sec-bd{padding:0 0 .5rem;}" +
+".notif-cols{display:flex;justify-content:flex-end;gap:.55rem;font-size:.66rem;color:var(--ink-dim);padding-right:.1rem;}" +
+".notif-cols span,.notif-two .notif-sw{width:2.3rem;text-align:center;}" +
+".notif-two{display:flex;gap:.55rem;flex:none;}" +
+".notif-st{display:flex;align-items:center;gap:.6rem;border-radius:.8rem;padding:.6rem .7rem;margin:.1rem 0 .4rem;font-size:.82rem;background:var(--surface-2);}" +
+".notif-st-dot{width:.6rem;height:.6rem;border-radius:50%;flex:none;background:var(--ink-dim);}" +
+".notif-st--ok .notif-st-dot{background:#5bd68a;}" +
+".notif-st--warn .notif-st-dot{background:#ffb238;}" +
+".notif-st--bad .notif-st-dot{background:#ff6b6b;}" +
+".notif-st-btn{margin-left:auto;background:none;border:1px solid var(--accent);color:var(--accent);border-radius:999px;padding:.25rem .7rem;font-size:.72rem;cursor:pointer;}" +
+".notif-kill{position:sticky;bottom:0;background:var(--surface);display:flex;align-items:center;gap:.7rem;margin-top:.7rem;padding:.65rem .75rem;border:1px solid var(--border);border-radius:.8rem;font-size:.84rem;}" +
 ".notif-set-hint{font-size:.75rem;line-height:1.35;color:var(--ink-dim);margin:.1rem 0 .6rem;}" +
 ".notif-set-row{display:flex;align-items:center;gap:.7rem;padding:.55rem 0;border-bottom:1px solid var(--border);font-size:.84rem;color:var(--ink);text-transform:none;letter-spacing:0;font-weight:400;}" +
 ".notif-set-row:last-child{border-bottom:0;}" +
