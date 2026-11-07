@@ -141,6 +141,8 @@ function boot(INITIAL_STATE) {
   // or persisted, reset to "all" automatically by renderTrier() itself if
   // it ever points at a type nothing in the queue has anymore (see there).
   var trierTypeFilter = "all";
+  // Progression de la file « À trier » : total de la session (grandit si de nouveaux titres arrivent), pour afficher « 2 / 10 ».
+  var trierTotal = 0, trierPrevLen = 0;
   // Filtres/recherche de la page "Bibliothèque" — même famille que
   // trierTypeFilter juste au-dessus : purement locaux, jamais partagés ni
   // persistés, remis à zéro à chaque rechargement de page.
@@ -1823,6 +1825,32 @@ function boot(INITIAL_STATE) {
     bindAutoScroll();
     bindImageLightbox();
     bindTrailerLinks();
+    syncTabbarHeight();
+    if (lastRenderedTab !== activeTab) { document.documentElement.classList.remove("tabbar-hidden"); hideUndoToast(); lastRenderedTab = activeTab; }
+  }
+
+  // Hauteur réelle de la barre d'onglets (la barre de vote se pose juste au-dessus) + masquage au scroll vers le bas (mobile).
+  var lastRenderedTab = null;
+  function syncTabbarHeight() {
+    var tb = document.querySelector(".tabbar");
+    if (tb) document.documentElement.style.setProperty("--tabbar-h", tb.offsetHeight + "px");
+  }
+  function bindTabbarAutoHide() {
+    var lastY = window.scrollY || 0, ticking = false;
+    var root = document.documentElement;
+    window.addEventListener("scroll", function () {
+      if (ticking) return;
+      ticking = true;
+      requestAnimationFrame(function () {
+        ticking = false;
+        if (window.innerWidth >= 900) { root.classList.remove("tabbar-hidden"); return; }
+        var y = Math.max(0, window.scrollY || 0), d = y - lastY;
+        if (y < 60) { root.classList.remove("tabbar-hidden"); lastY = y; }
+        else if (d > 8) { root.classList.add("tabbar-hidden"); lastY = y; }
+        else if (d < -8) { root.classList.remove("tabbar-hidden"); lastY = y; }
+      });
+    }, { passive: true });
+    window.addEventListener("resize", syncTabbarHeight);
   }
 
   function bindAutoScroll() {
@@ -3748,17 +3776,18 @@ function boot(INITIAL_STATE) {
       // "matchs" gets the warm accent colour instead — a match is good
       // news worth calling out, not just a pending-count like the other.
       { id: "matchs", label: "Matchs", icon: HEART_ICON, key: "2", badge: newMatchCount, tone: "accent", popped: matchPopped },
+      // « Ajouter » au centre, en bouton rond orange (mobile).
+      { id: "ajouter", label: "Ajouter", icon: TAB_ICON_AJOUTER, key: "4", badge: 0, fab: true },
       { id: "vus", label: "Vus", icon: EYE_ICON, key: "3", badge: 0 },
       // Libellé raccourci dans la barre (les 4 autres tiennent tous sur un
       // seul mot court) — le titre complet "Bibliothèque" reste affiché en
       // haut de la page elle-même (voir renderBibliotheque()).
-      { id: "bibliotheque", label: "Biblio", icon: TAB_ICON_BIBLIO, key: "5", badge: 0 },
-      { id: "ajouter", label: "Ajouter", icon: TAB_ICON_AJOUTER, key: "4", badge: 0 }
+      { id: "bibliotheque", label: "Biblio", icon: TAB_ICON_BIBLIO, key: "5", badge: 0 }
     ];
     var html = "<nav class=\"tabbar\">";
     tabs.forEach(function (t) {
       var badgeClass = "notif-badge tab-badge tab-badge--" + t.tone + (t.popped ? " tab-badge--pop" : "");
-      html += "<button class=\"tab" + (activeTab === t.id ? " tab--active" : "") + "\" data-tab=\"" + t.id +
+      html += "<button class=\"tab" + (t.fab ? " tab--fab" : "") + (activeTab === t.id ? " tab--active" : "") + "\" data-tab=\"" + t.id +
         "\" title=\"Raccourci : " + t.key + "\">" +
         "<span class=\"tab-icon\" aria-hidden=\"true\">" + t.icon + "</span>" +
         "<span class=\"tab-label\">" + escapeHtml(t.label) + "</span>" +
@@ -4107,9 +4136,18 @@ function boot(INITIAL_STATE) {
     if (trierTypeFilter !== "all" && presentTypes.indexOf(trierTypeFilter) < 0) trierTypeFilter = "all";
     var queue = trierTypeFilter === "all" ? allQueue : allQueue.filter(function (i) { return i.type === trierTypeFilter; });
 
-    var html = "<div class=\"screen-head\"><p class=\"eyebrow\">À trier</p><h2 class=\"screen-title\">" +
-      (allQueue.length ? allQueue.length + " lien" + (allQueue.length > 1 ? "s" : "") + " à trier" : "Tout est trié") +
-      "</h2></div>";
+    if (!allQueue.length) { trierTotal = 0; trierPrevLen = 0; }
+    else {
+      if (!trierTotal) trierTotal = allQueue.length;
+      else if (allQueue.length > trierPrevLen) trierTotal += allQueue.length - trierPrevLen;
+      trierPrevLen = allQueue.length;
+    }
+    var trierDone = Math.max(0, trierTotal - allQueue.length);
+    var html = allQueue.length
+      ? "<div class=\"screen-head\"><div class=\"trier-head\"><p class=\"eyebrow\">À trier</p><h2 class=\"screen-title\">" +
+        Math.min(trierDone + 1, trierTotal) + " <span class=\"trier-of\">/ " + trierTotal + "</span></h2></div>" +
+        "<div class=\"trier-prog\"><i style=\"width:" + Math.round(trierDone / trierTotal * 100) + "%\"></i></div></div>"
+      : "<div class=\"screen-head\"><p class=\"eyebrow\">À trier</p><h2 class=\"screen-title\">Tout est trié</h2></div>";
 
     if (!allQueue.length) {
       html += "<p class=\"empty\">File vide. Direction l'onglet « Ajouter » pour proposer quelque chose.</p>";
@@ -4154,6 +4192,12 @@ function boot(INITIAL_STATE) {
         deletable: true
       });
     });
+    // Barre de vote fixe (mobile) : relaie vers les boutons de la carte active, qui restent la seule logique de vote.
+    html += "<div class=\"vote-bar\" id=\"vote-bar\">" +
+      "<button type=\"button\" class=\"vb vb--seen\" data-bar=\"seen\" aria-label=\"Déjà vue\" title=\"Déjà vue\">" + EYE_ICON + "</button>" +
+      "<button type=\"button\" class=\"vb vb--pass\" data-bar=\"pass\"><span aria-hidden=\"true\">✕</span> Pas envie</button>" +
+      "<button type=\"button\" class=\"vb vb--yes\" data-bar=\"yes\"><span aria-hidden=\"true\">♥</span> Envie !</button>" +
+      "</div>";
     return html;
   }
 
@@ -5118,6 +5162,33 @@ function boot(INITIAL_STATE) {
     if (justMatchedItem) openMatchModal(justMatchedItem);
   }
 
+  // Vote depuis « À trier » + bandeau « Annuler » pendant 5 s (pas de bandeau si le vote crée un match : il a sa propre fenêtre).
+  var undoTimer = null;
+  function hideUndoToast() {
+    clearTimeout(undoTimer);
+    var el = document.getElementById("undo-toast");
+    if (el) el.remove();
+  }
+  function showUndoToast(id, yes, title) {
+    hideUndoToast();
+    var el = document.createElement("div");
+    el.id = "undo-toast";
+    el.setAttribute("role", "status");
+    el.innerHTML = "<span>" + (yes ? "♥" : "✕") + " « " + escapeHtml(title) + " » → " + (yes ? "Envie" : "Pas envie") + "</span>" +
+      "<button type=\"button\">Annuler</button><span class=\"ut-bar\"></span>";
+    el.querySelector("button").addEventListener("click", function () { hideUndoToast(); trierPrevLen += 1; unvote(id); });
+    document.body.appendChild(el);
+    undoTimer = setTimeout(hideUndoToast, 5000);
+  }
+  function castVoteUndo(id, yes) {
+    var it = state.items.find(function (i) { return i.id === id; });
+    var title = it ? String(it.title || "") : "";
+    castVote(id, yes);
+    var after = state.items.find(function (i) { return i.id === id; });
+    if (after && itemStatus(after) === "matched") return;
+    showUndoToast(id, yes, title);
+  }
+
   // Efface mon vote sur ce titre — utilisé quand on reclique un vote déjà
   // confirmé (voir toggleVote juste en dessous), pour repasser à "pas
   // encore voté" plutôt que de forcer une valeur.
@@ -5263,7 +5334,7 @@ function boot(INITIAL_STATE) {
         // Wait for the fly-off transition to actually finish before the
         // vote's persist()/render() replaces this card out from under it
         // — matches .stub--swipeable's .28s transition (see CSS).
-        setTimeout(function () { castVote(id, yes); }, 280);
+        setTimeout(function () { castVoteUndo(id, yes); }, 280);
       } else {
         stubEl.style.transform = "";
         stubEl.style.transformOrigin = "";
@@ -5313,12 +5384,22 @@ function boot(INITIAL_STATE) {
     }
     var carouselFocus = bindCarousel("trier-track");
 
+    document.querySelectorAll("#vote-bar [data-bar]").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        var k = btn.getAttribute("data-bar");
+        var sel = k === "seen" ? "[data-already-watched]" : "[data-vote=\"" + k + "\"]";
+        var target = document.querySelector("#trier-track .carousel-slide.is-active " + sel) ||
+          document.querySelector("#trier-track .carousel-slide " + sel);
+        if (target) target.click();
+      });
+    });
+
     track.querySelectorAll(".stub").forEach(function (stubEl) {
       var id = stubEl.getAttribute("data-id");
 
       stubEl.querySelectorAll("[data-vote]").forEach(function (btn) {
         btn.addEventListener("click", function () {
-          castVote(id, btn.getAttribute("data-vote") === "yes");
+          castVoteUndo(id, btn.getAttribute("data-vote") === "yes");
         });
       });
 
@@ -8787,6 +8868,39 @@ function boot(INITIAL_STATE) {
 // control, so it reads better a size down.
 ".trier-filter .pill-btn{font-size:.62rem;padding:.36rem .6rem;}" +
 ".detect-note{margin:.6rem 0 0;font-size:.78rem;color:var(--accent);}" +
+// ---- Écran « À trier » : compteur, barre de vote fixe, bandeau Annuler ; barre d'onglets avec « + » central ----
+".trier-head{display:flex;justify-content:space-between;align-items:baseline;}" +
+".trier-head .eyebrow{margin:0;}" +
+".trier-of{font-size:.95rem;font-weight:400;color:var(--ink-dim);}" +
+".trier-prog{height:4px;border-radius:3px;background:var(--surface-2);margin-top:.55rem;overflow:hidden;}" +
+".trier-prog i{display:block;height:100%;background:var(--accent);border-radius:3px;transition:width .3s ease;}" +
+".vote-bar{display:none;}" +
+".vb{height:3.2rem;border-radius:1rem;font-family:inherit;font-weight:700;font-size:1rem;display:flex;align-items:center;justify-content:center;gap:.4rem;cursor:pointer;}" +
+".vb svg{width:1.3rem;height:1.3rem;display:block;}" +
+".vb--seen{width:3.2rem;flex:none;background:var(--surface);border:1px solid var(--border);color:var(--ink-dim);}" +
+".vb--pass{flex:1;background:var(--surface);border:1.5px solid var(--ink-dim);color:var(--ink);}" +
+".vb--yes{flex:1.3;background:var(--accent);border:0;color:var(--accent-ink);box-shadow:0 6px 18px rgba(255,178,56,.3);}" +
+"#undo-toast{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(var(--tabbar-h,4.7rem) + 4.8rem);width:min(92vw,420px);z-index:60;" +
+  "background:var(--surface-2);border:1px solid var(--border);border-radius:1rem;padding:.8rem 1rem;display:flex;align-items:center;gap:.7rem;" +
+  "font-size:.9rem;box-shadow:0 10px 30px rgba(0,0,0,.5);overflow:hidden;}" +
+"#undo-toast button{margin-left:auto;background:none;border:0;color:var(--accent);font-weight:700;font-size:.9rem;cursor:pointer;padding:.3rem .2rem;font-family:inherit;}" +
+"#undo-toast .ut-bar{position:absolute;left:0;bottom:0;height:3px;background:var(--accent);animation:ut-shrink 5s linear forwards;}" +
+"@keyframes ut-shrink{from{width:100%}to{width:0}}" +
+".tabbar{transition:transform .25s ease;}" +
+"@media(max-width:899px){" +
+  "#trier-track .stub-actions{display:none;}" +
+  ".vote-bar{display:flex;gap:.6rem;position:fixed;left:0;right:0;bottom:var(--tabbar-h,4.7rem);z-index:9;padding:1.2rem 1.1rem .7rem;" +
+    "background:linear-gradient(180deg,transparent,var(--bg) 38%);transition:bottom .25s ease;}" +
+  "html.tabbar-hidden .vote-bar{bottom:env(safe-area-inset-bottom);}" +
+  "html.tabbar-hidden .tabbar{transform:translateY(105%);}" +
+  "html.tabbar-hidden #undo-toast{bottom:calc(env(safe-area-inset-bottom) + 4.8rem);}" +
+  "#root:has(.vote-bar) .screen{padding-bottom:10.5rem;}" +
+  ".tab.tab--fab{color:var(--accent);font-weight:600;background:none!important;}" +
+  ".tab--fab .tab-icon{width:2.9rem;height:2.9rem;border-radius:50%;background:var(--accent);color:var(--accent-ink);align-items:center;justify-content:center;" +
+    "box-shadow:0 6px 18px rgba(255,178,56,.35);}" +
+  ".tab--fab .tab-icon svg{width:24px;height:24px;stroke-width:2.6;}" +
+  ".tab--fab.tab--active .tab-icon{box-shadow:0 0 0 3px var(--surface),0 0 0 5px var(--accent);}" +
+"}" +
 ".tabbar{position:fixed;z-index:10;bottom:0;left:0;right:0;display:flex;justify-content:center;gap:.25rem;" +
   "background:var(--surface);border-top:1px dashed var(--border);padding:.7rem 1rem calc(.7rem + env(safe-area-inset-bottom));" +
   // 5 onglets tiennent large sur la plupart des écrans, mais sur les très
@@ -8927,6 +9041,7 @@ function boot(INITIAL_STATE) {
   bindRateModalOnce();
   bindNotifPanelOnce();
   bindVisibilityRestore();
+  bindTabbarAutoHide();
 
   bindShareOnce();
   (async function start() {
