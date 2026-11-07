@@ -124,10 +124,8 @@ window.__dpBlock=false;
 <div id="preview-modal" hidden></div>
 <div id="auth-modal" hidden></div>
 <div id="toast-stack" aria-live="polite"></div>
-<!-- Synchro temps réel entre les deux membres d'un espace (facultatif — clé
-     intégrée au fichier). Sans elle, l'appli reste 100% fonctionnelle,
-     juste sans notification instantanée côté binôme. -->
-<script src="https://cdn.ably.io/lib/ably.min-2.js"></script>
+<!-- Base de données + comptes + synchro temps réel : Supabase. -->
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
 <script>
 function boot(INITIAL_STATE) {
   "use strict";
@@ -188,23 +186,42 @@ function boot(INITIAL_STATE) {
   var syncNote = "";
   var artifactAPI = null;
 
-  /* ---------- comptes & espace partagé (JSONBin) ----------
-     Remplace l'ancien "artifact" partagé par lien : chaque utilisateur crée
-     un vrai compte (email + mot de passe) dans un bin "index" JSONBin ; ce
-     compte pointe vers un "espace" (spaceId) stocké dans son propre bin
-     JSONBin (un bin par duo, pas un bin géant partagé par tout le monde —
-     ça évite que deux couples sans rapport se marchent dessus à chaque
-     sauvegarde). Un code d'invitation à 6 caractères permet à un second
-     compte de rejoindre directement l'espace du premier au lieu de s'en
-     créer un nouveau. */
-  // Config de la base "embarquée" dans le fichier. Comme ça, N'IMPORTE QUEL
-  // appareil qui ouvre le site (ton binôme sur son téléphone, etc.) a
-  // directement accès à l'appli.
-  // Cette clé n'est protégée par rien côté utilisateur final — la seule
-  // protection réelle est de ne l'utiliser que sur un compte JSONBin dédié
-  // à cette appli.
-  var EMBEDDED_DB_CONFIG = {"masterKey":"$2a$10$TsZpIXjWtXHI1XlGNuIj.emvYcphgnJRX8T7eaorhkfX6ih3il8xG","indexBinId":"6a94474ada38895dfe233ef2","ablyKey":"b1-gAw.GJRpHg:zdOxrwALlCVKvWLuykzFMStRyFsm4FwfOI3ZXYbLRi8"};
-  var dbConfig = loadDbConfig();      // { masterKey, indexBinId }
+  /* ---------- comptes & espace partagé (Supabase) ----------
+     Chaque personne a un vrai compte (email + mot de passe) géré par
+     Supabase Auth ; son espace (le duo) est un ensemble de lignes dans la
+     base, protégées par des règles d'accès (RLS) : seuls les membres d'un
+     espace peuvent lire ou modifier ses films. La clé ci-dessous est la clé
+     "publique" (anon) prévue pour être visible dans le navigateur — sans
+     danger en soi, ce sont les règles d'accès qui protègent les données.
+     Un code d'invitation permet à un second compte de rejoindre l'espace. */
+  var SUPABASE_URL = "https://oyrzjpofanpzacauabcq.supabase.co";
+  var SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im95cnpqcG9mYW5wemFjYXVhYmNxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTQwNDk5NzYsImV4cCI6MjEwOTYyNTk3Nn0.TsUPXNs7vwWHTIGyezlGhpyZvFQsPwpX-OcT3r10PLQ";
+  var dbConfig = { url: SUPABASE_URL, anonKey: SUPABASE_ANON_KEY };
+  // Lien de réinitialisation de mot de passe : à lire avant que la bibliothèque ne nettoie l'adresse.
+  var needNewPass = /[#&]type=recovery/.test(location.hash);
+  // "Rester connecté" : la session Supabase va dans localStorage (survit à la fermeture) ou sessionStorage (effacée avec l'onglet).
+  var rememberFlag = (function () {
+    try { return !(sessionStorage.getItem("dp-session") && !localStorage.getItem("dp-session")); } catch (e) { return true; }
+  })();
+  var authStore = {
+    getItem: function (k) { try { var v = sessionStorage.getItem(k); return v !== null ? v : localStorage.getItem(k); } catch (e) { return null; } },
+    setItem: function (k, v) {
+      try {
+        if (rememberFlag) { localStorage.setItem(k, v); sessionStorage.removeItem(k); }
+        else { sessionStorage.setItem(k, v); localStorage.removeItem(k); }
+      } catch (e) {}
+    },
+    removeItem: function (k) { try { localStorage.removeItem(k); sessionStorage.removeItem(k); } catch (e) {} }
+  };
+  var sb = null;
+  try {
+    if (window.supabase && window.supabase.createClient) {
+      sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+        auth: { storage: authStore, storageKey: "dp-sb-auth", persistSession: true, autoRefreshToken: true, detectSessionInUrl: true },
+        realtime: { params: { eventsPerSecond: 10 } }
+      });
+    }
+  } catch (e) { sb = null; }
   var session = loadSession();              // { email, name, spaceId, binId }
   var spaceLoaded = false;                  // state.items a bien été chargé depuis le bin de l'espace
   var authMode = "login";                   // "login" | "register"
@@ -218,6 +235,7 @@ function boot(INITIAL_STATE) {
     try { history.replaceState(null, "", location.href.split(/[?#]/)[0]); } catch (e) {}
   })();
   var authError = "";
+  var authInfo = "";
   var authBusy = false;
   var joinCodeFromUrl = (function () {
     var m = /[?&]join=([A-Za-z0-9]+)/.exec(location.search);
@@ -906,18 +924,9 @@ function boot(INITIAL_STATE) {
 
   function clone(obj) { return JSON.parse(JSON.stringify(obj)); }
 
-  /* ---------- config base (clés JSONBin) ---------- */
-  function loadDbConfig() {
-    try {
-      var stored = JSON.parse(localStorage.getItem("dp-db-config") || "null");
-      if (stored && stored.indexBinId && stored.masterKey) return stored;
-    } catch (e) { /* ignore, on retombe sur la config embarquée */ }
-    return EMBEDDED_DB_CONFIG || {};
-  }
-
   /* ---------- apparence (clair / sombre / système) ----------
      Préférence purement locale à cet appareil — n'a rien à voir avec
-     l'espace partagé, donc jamais envoyée à JSONBin. */
+     l'espace partagé, donc jamais envoyée à la base. */
   function loadThemePref() {
     try { return localStorage.getItem("dp-theme") || "system"; } catch (e) { return "system"; }
   }
@@ -955,86 +964,272 @@ function boot(INITIAL_STATE) {
       sessionStorage.removeItem("dp-session");
     }
   }
-  function clearSession() {
+  function clearSession(keepAuth) {
     session = null;
     localStorage.removeItem("dp-session");
     sessionStorage.removeItem("dp-session");
+    if (!keepAuth && sb && !sbSigningOut) {
+      sbSigningOut = true;
+      Promise.resolve(sb.auth.signOut()).catch(function () {}).then(function () { sbSigningOut = false; });
+    }
   }
 
-  /* ---------- mots de passe ----------
-     Hashage côté client (SHA-256 salé) avant tout envoi à JSONBin. Ce n'est
-     pas un vrai backend d'authentification : la clé Master JSONBin vit dans
-     ce fichier statique, donc quiconque l'ouvre dans un inspecteur peut lire
-     le bin index (emails + hash + sel) et, plus grave, l'utiliser pour lire
-     ou écrire n'importe quel bin de ce compte JSONBin. Traiter ça comme un
-     verrou de confort entre deux personnes de confiance, pas comme une
-     sécurité robuste face à un tiers malveillant. */
-  function randomHex(nBytes) {
-    var arr = new Uint8Array(nBytes);
-    crypto.getRandomValues(arr);
-    return Array.prototype.map.call(arr, function (b) { return b.toString(16).padStart(2, "0"); }).join("");
-  }
-  async function hashPassword(password, salt) {
-    var data = new TextEncoder().encode(salt + ":" + password);
-    var digest = await crypto.subtle.digest("SHA-256", data);
-    return Array.prototype.map.call(new Uint8Array(digest), function (b) { return b.toString(16).padStart(2, "0"); }).join("");
-  }
-  function randomInviteCode() {
-    var chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // sans caractères ambigus (0/O, 1/I...)
-    var out = "";
-    for (var i = 0; i < 6; i++) out += chars[Math.floor(Math.random() * chars.length)];
-    return out;
-  }
   function normalizeEmail(email) { return (email || "").trim().toLowerCase(); }
 
-  /* ---------- JSONBin ---------- */
-  var JSONBIN_ROOT = "https://api.jsonbin.io/v3/b";
-  function jsonbinHeaders(extra) {
-    var h = { "Content-Type": "application/json" };
-    if (dbConfig.masterKey) h["X-Master-Key"] = dbConfig.masterKey;
-    return Object.assign(h, extra || {});
+  /* ---------- Supabase : accès aux données ----------
+     Les films / votes / notes / notifications vivent dans des vraies tables
+     (voir la base). L'appli garde son objet `state` d'avant ({items, events,
+     seen, cleared, notifPrefs}) : on le reconstruit à partir des tables au
+     chargement, et à chaque sauvegarde on n'écrit QUE les lignes qui ont
+     changé (diff) — deux personnes qui agissent en même temps ne s'écrasent
+     donc plus. Les votes / notes / événements sont rattachés à un membre
+     (identifiant), pas à un prénom : renommer quelqu'un ne casse plus rien. */
+  var myUserId = null;
+  var myMemberId = null;
+  var sbNameToId = {};         // prénom -> member_id (pour écrire addedBy / votes)
+  var sbBaseRows = null;       // lignes telles que sur le serveur à la dernière synchro
+  var sbFlushing = false;
+  var refreshDeferred = false;
+  var sbSigningOut = false;
+
+  function sbChk(r) { if (r && r.error) throw r.error; return r; }
+  function sstr(v, skipNull) {
+    if (v === null || v === undefined) return "null";
+    if (Array.isArray(v)) return "[" + v.map(function (x) { return sstr(x, skipNull); }).join(",") + "]";
+    if (typeof v === "object") {
+      return "{" + Object.keys(v).sort().filter(function (k) {
+        return !(skipNull && (v[k] === null || v[k] === undefined));
+      }).map(function (k) { return JSON.stringify(k) + ":" + sstr(v[k], skipNull); }).join(",") + "}";
+    }
+    return JSON.stringify(v);
   }
-  async function jsonbinCreate(content, name) {
-    var res = await fetch(JSONBIN_ROOT, {
-      method: "POST",
-      headers: jsonbinHeaders(name ? { "X-Bin-Name": name } : {}),
-      body: JSON.stringify(content)
+  async function sbFetchAll(table, sid, orderCols) {
+    var out = [], from = 0, step = 1000;
+    for (;;) {
+      var q = sb.from(table).select("*").eq("space_id", sid);
+      orderCols.forEach(function (c) { q = q.order(c, { ascending: true }); });
+      var r = sbChk(await q.range(from, from + step - 1));
+      out = out.concat(r.data || []);
+      if (!r.data || r.data.length < step) break;
+      from += step;
+    }
+    return out;
+  }
+  function sbMemberIdByName(name) { return name ? (sbNameToId[name] || null) : null; }
+
+  // Annuaire de l'espace (qui est dans l'espace, code d'invitation…) — remplace l'ancien "bin index".
+  function sbApplyMembers(members, space) {
+    sbNameToId = {};
+    members.filter(function (m) { return !m.active; }).forEach(function (m) { sbNameToId[m.name] = m.member_id; });
+    members.filter(function (m) { return m.active; }).forEach(function (m) { sbNameToId[m.name] = m.member_id; });
+    var users = {}, list = [];
+    members.filter(function (m) { return m.active; }).forEach(function (m) {
+      var mine = m.user_id && m.user_id === myUserId;
+      if (mine) myMemberId = m.member_id;
+      var key = mine ? session.email : "m:" + m.member_id;
+      users[key] = { email: key, name: m.name, avatarColor: m.avatar_color || undefined,
+        createdAt: m.joined_at ? Date.parse(m.joined_at) : undefined, memberId: m.member_id };
+      list.push(key);
     });
-    if (!res.ok) throw new Error("jsonbin create failed (" + res.status + ")");
-    var data = await res.json();
-    return data.metadata.id;
-  }
-  async function jsonbinRead(binId) {
-    var res = await fetch(JSONBIN_ROOT + "/" + binId + "/latest", { headers: jsonbinHeaders(), cache: "no-store" });
-    if (!res.ok) throw new Error("jsonbin read failed (" + res.status + ")");
-    var data = await res.json();
-    return data.record;
-  }
-  async function jsonbinWrite(binId, content) {
-    var res = await fetch(JSONBIN_ROOT + "/" + binId, {
-      method: "PUT",
-      headers: jsonbinHeaders(),
-      body: JSON.stringify(content)
-    });
-    if (!res.ok) throw new Error("jsonbin write failed (" + res.status + ")");
-    var data = await res.json();
-    return data.record;
-  }
-  // Lit le bin, applique mutateFn dessus, puis réécrit — toujours en relisant
-  // juste avant d'écrire (jamais depuis un cache local) pour réduire la
-  // fenêtre pendant laquelle deux écritures pourraient se marcher dessus.
-  // JSONBin n'offre pas de vraie écriture conditionnelle : ceci reste un
-  // best-effort, pas une garantie transactionnelle.
-  async function jsonbinUpdate(binId, mutateFn) {
-    var current = await jsonbinRead(binId);
-    mutateFn(current);
-    return jsonbinWrite(binId, current);
+    var spaces = {};
+    spaces[session.spaceId] = { members: list, inviteCode: space ? space.invite_code : "", maxMembers: space ? space.max_members : 2 };
+    indexCache = { users: users, spaces: spaces };
   }
   async function loadIndex() {
-    indexCache = await jsonbinRead(dbConfig.indexBinId);
-    if (!indexCache.users) indexCache.users = {};
-    if (!indexCache.spaces) indexCache.spaces = {};
+    var sid = session.spaceId;
+    var r = await Promise.all([
+      sbFetchAll("space_members", sid, ["joined_at", "member_id"]),
+      sb.from("spaces").select("*").eq("id", sid).maybeSingle()
+    ]);
+    sbChk(r[1]);
+    sbApplyMembers(r[0], r[1].data);
     return indexCache;
+  }
+  function spaceIsFull() {
+    var entry = indexCache && session ? indexCache.spaces[session.spaceId] : null;
+    return !!entry && (entry.members || []).length >= (entry.maxMembers || 2);
+  }
+
+  var ITEM_KNOWN = { id: 1, url: 1, title: 1, year: 1, description: 1, posterUrl: 1, watchProviders: 1, trailer: 1, certification: 1,
+    genres: 1, tmdbId: 1, mediaType: 1, type: 1, addedBy: 1, createdAt: 1, watched: 1, watchedAt: 1, matchedAt: 1,
+    votes: 1, voteTimestamps: 1, ratings: 1, ratingTimestamps: 1 };
+  var EVENT_KNOWN = { id: 1, by: 1, type: 1, itemId: 1, title: 1, ts: 1 };
+
+  function numOrNull(v) { return (typeof v === "number" && isFinite(v)) ? v : null; }
+
+  function sbItemToRow(it) {
+    var extra = {};
+    Object.keys(it).forEach(function (k) { if (!ITEM_KNOWN[k] && it[k] !== undefined) extra[k] = it[k]; });
+    var mid = sbMemberIdByName(it.addedBy);
+    if (it.addedBy && !mid) extra.addedByName = it.addedBy;
+    return {
+      space_id: session.spaceId, id: String(it.id),
+      url: it.url == null ? null : it.url, title: it.title || "", year: numOrNull(it.year),
+      description: it.description == null ? null : it.description,
+      poster_url: it.posterUrl == null ? null : it.posterUrl,
+      watch_providers: it.watchProviders == null ? null : it.watchProviders,
+      trailer: it.trailer == null ? null : it.trailer,
+      certification: it.certification == null ? null : it.certification,
+      genres: it.genres == null ? null : it.genres,
+      tmdb_id: numOrNull(it.tmdbId), media_type: it.mediaType == null ? null : it.mediaType,
+      type: it.type == null ? null : it.type, added_by: mid,
+      created_at_ms: numOrNull(it.createdAt), watched: !!it.watched,
+      watched_at_ms: numOrNull(it.watchedAt), matched_at_ms: numOrNull(it.matchedAt), extra: extra
+    };
+  }
+  function sbRowsFromState(st) {
+    var rows = { items: {}, votes: {}, ratings: {}, events: {}, prefs: null };
+    (st.items || []).forEach(function (it) {
+      var row = sbItemToRow(it);
+      rows.items[row.id] = row;
+      if (!myMemberId) return;
+      if (it.votes && typeof it.votes[myName] === "boolean") {
+        rows.votes[row.id] = { space_id: session.spaceId, item_id: row.id, member_id: myMemberId, vote: it.votes[myName],
+          ts: numOrNull(it.voteTimestamps && it.voteTimestamps[myName]) };
+      }
+      if (it.ratings && typeof it.ratings[myName] === "number" && isFinite(it.ratings[myName])) {
+        rows.ratings[row.id] = { space_id: session.spaceId, item_id: row.id, member_id: myMemberId, rating: it.ratings[myName],
+          ts: numOrNull(it.ratingTimestamps && it.ratingTimestamps[myName]) };
+      }
+    });
+    (st.events || []).forEach(function (e) {
+      if (e.by !== myName || !myMemberId) return;
+      var extra = {};
+      Object.keys(e).forEach(function (k) { if (!EVENT_KNOWN[k] && e[k] !== undefined) extra[k] = e[k]; });
+      rows.events[e.id] = { space_id: session.spaceId, id: String(e.id), by_member: myMemberId, type: e.type,
+        item_id: e.itemId == null ? null : String(e.itemId), title: e.title == null ? null : e.title, ts: e.ts, extra: extra };
+    });
+    rows.prefs = {
+      seen_at: (st.seen && st.seen[myName]) || 0,
+      cleared_at: (st.cleared && st.cleared[myName]) || 0,
+      notif_prefs: (st.notifPrefs && st.notifPrefs[myName]) || {}
+    };
+    return rows;
+  }
+
+  async function sbLoadState() {
+    var sid = session.spaceId;
+    if (!myUserId) { var gs = await sb.auth.getSession(); myUserId = gs.data && gs.data.session ? gs.data.session.user.id : null; }
+    var res = await Promise.all([
+      sbFetchAll("items", sid, ["created_at_ms", "id"]),
+      sbFetchAll("item_votes", sid, ["item_id", "member_id"]),
+      sbFetchAll("item_ratings", sid, ["item_id", "member_id"]),
+      sbFetchAll("events", sid, ["ts", "id"]),
+      sbFetchAll("space_members", sid, ["joined_at", "member_id"]),
+      sbFetchAll("member_prefs", sid, ["member_id"]),
+      sb.from("spaces").select("*").eq("id", sid).maybeSingle()
+    ]);
+    sbChk(res[6]);
+    var members = res[4], space = res[6].data;
+    var me = members.filter(function (m) { return m.user_id && m.user_id === myUserId && m.active; })[0];
+    if (!me || !space) return null;
+    sbApplyMembers(members, space);
+    // prénoms : un ancien membre dont le prénom est repris par un membre actuel est ignoré (ambigu)
+    var activeNames = {};
+    members.forEach(function (m) { if (m.active) activeNames[m.name] = true; });
+    var nameOf = {};
+    members.forEach(function (m) { if (m.active || !activeNames[m.name]) nameOf[m.member_id] = m.name; });
+
+    var votesBy = {}, ratingsBy = {};
+    res[1].forEach(function (v) { (votesBy[v.item_id] = votesBy[v.item_id] || []).push(v); });
+    res[2].forEach(function (r) { (ratingsBy[r.item_id] = ratingsBy[r.item_id] || []).push(r); });
+
+    var items = res[0].map(function (r) {
+      var it = {};
+      var ex = r.extra || {};
+      Object.keys(ex).forEach(function (k) { if (k !== "addedByName") it[k] = ex[k]; });
+      it.id = r.id; it.url = r.url; it.title = r.title; it.year = r.year; it.description = r.description;
+      it.posterUrl = r.poster_url; it.watchProviders = r.watch_providers; it.trailer = r.trailer;
+      it.certification = r.certification; it.genres = r.genres; it.tmdbId = r.tmdb_id; it.mediaType = r.media_type;
+      it.type = r.type; it.addedBy = (r.added_by && nameOf[r.added_by]) || ex.addedByName || "";
+      it.createdAt = r.created_at_ms; it.watched = !!r.watched;
+      if (r.watched_at_ms != null) it.watchedAt = r.watched_at_ms;
+      if (r.matched_at_ms != null) it.matchedAt = r.matched_at_ms;
+      it.votes = {}; it.ratings = {};
+      (votesBy[r.id] || []).forEach(function (v) {
+        var n = nameOf[v.member_id]; if (!n) return;
+        it.votes[n] = !!v.vote;
+        if (v.ts != null) { it.voteTimestamps = it.voteTimestamps || {}; it.voteTimestamps[n] = v.ts; }
+      });
+      (ratingsBy[r.id] || []).forEach(function (v) {
+        var n = nameOf[v.member_id]; if (!n) return;
+        it.ratings[n] = Number(v.rating);
+        if (v.ts != null) { it.ratingTimestamps = it.ratingTimestamps || {}; it.ratingTimestamps[n] = v.ts; }
+      });
+      return it;
+    });
+
+    var allEvents = res[3].map(function (r) {
+      var e = {};
+      var ex = r.extra || {};
+      Object.keys(ex).forEach(function (k) { e[k] = ex[k]; });
+      e.id = r.id; e.by = (r.by_member && nameOf[r.by_member]) || ex.byName || ""; e.type = r.type;
+      e.itemId = r.item_id; e.title = r.title; e.ts = r.ts;
+      return e;
+    });
+    var events = allEvents.slice(-NOTIF_MAX_EVENTS);
+    if (allEvents.length > NOTIF_MAX_EVENTS * 2 && myMemberId) {
+      // ménage discret : mes anciens événements au-delà de la fenêtre affichée
+      var keep = {}; events.forEach(function (e) { keep[e.id] = true; });
+      var old = res[3].filter(function (r) { return r.by_member === myMemberId && !keep[r.id]; }).map(function (r) { return r.id; });
+      if (old.length) sb.from("events").delete().eq("space_id", sid).in("id", old.slice(0, 200)).then(function () {}, function () {});
+    }
+
+    var seen = {}, cleared = {}, notifPrefs = {};
+    res[5].forEach(function (p) {
+      var n = nameOf[p.member_id]; if (!n) return;
+      if (p.seen_at > 0) seen[n] = p.seen_at;
+      if (p.cleared_at > 0) cleared[n] = p.cleared_at;
+      if (p.notif_prefs && Object.keys(p.notif_prefs).length) notifPrefs[n] = p.notif_prefs;
+    });
+    return { state: { items: items, events: events, seen: seen, cleared: cleared, notifPrefs: notifPrefs }, me: me };
+  }
+
+  // Écrit uniquement la différence entre la dernière version synchronisée et l'état actuel.
+  async function sbSaveDiff(base, next) {
+    var sid = session.spaceId;
+    var up = { items: [], votes: [], ratings: [], events: [] };
+    var del = { items: [], votes: [], ratings: [], events: [] };
+    ["items", "votes", "ratings", "events"].forEach(function (t) {
+      Object.keys(next[t]).forEach(function (k) {
+        if (!base[t][k] || sstr(base[t][k]) !== sstr(next[t][k])) up[t].push(next[t][k]);
+      });
+      Object.keys(base[t]).forEach(function (k) { if (!next[t][k]) del[t].push(k); });
+    });
+    var prefsChanged = sstr(base.prefs) !== sstr(next.prefs);
+    function chunks(arr, n) { var o = []; for (var i = 0; i < arr.length; i += n) o.push(arr.slice(i, i + n)); return o; }
+
+    for (var c of chunks(up.items, 100)) sbChk(await sb.from("items").upsert(c, { onConflict: "space_id,id" }));
+    var jobs = [];
+    chunks(up.votes, 200).forEach(function (c) { jobs.push(sb.from("item_votes").upsert(c, { onConflict: "space_id,item_id,member_id" })); });
+    chunks(up.ratings, 200).forEach(function (c) { jobs.push(sb.from("item_ratings").upsert(c, { onConflict: "space_id,item_id,member_id" })); });
+    chunks(up.events, 200).forEach(function (c) { jobs.push(sb.from("events").upsert(c, { onConflict: "space_id,id", ignoreDuplicates: true })); });
+    if (prefsChanged) jobs.push(sb.from("member_prefs").update(next.prefs).eq("member_id", myMemberId));
+    (await Promise.all(jobs)).forEach(sbChk);
+
+    jobs = [];
+    chunks(del.votes, 100).forEach(function (c) { jobs.push(sb.from("item_votes").delete().eq("space_id", sid).eq("member_id", myMemberId).in("item_id", c)); });
+    chunks(del.ratings, 100).forEach(function (c) { jobs.push(sb.from("item_ratings").delete().eq("space_id", sid).eq("member_id", myMemberId).in("item_id", c)); });
+    chunks(del.events, 100).forEach(function (c) { jobs.push(sb.from("events").delete().eq("space_id", sid).eq("by_member", myMemberId).in("id", c)); });
+    chunks(del.items, 100).forEach(function (c) { jobs.push(sb.from("items").delete().eq("space_id", sid).in("id", c)); });
+    (await Promise.all(jobs)).forEach(sbChk);
+  }
+
+  function sbFriendlyError(err) {
+    var m = ((err && (err.message || err.error_description)) || "").toLowerCase();
+    var c = ((err && (err.code || err.error_code)) || "").toLowerCase();
+    var mc = m + " " + c;
+    if (/already registered|user_already_exists/.test(mc)) return "Un compte existe déjà avec cet email.";
+    if (/invalid login|invalid_credentials/.test(mc)) return "Email ou mot de passe incorrect.";
+    if (/email not confirmed|email_not_confirmed/.test(mc)) return "Confirme d'abord ton adresse email (regarde ta boîte mail, spams compris).";
+    if (/same_password|same password/.test(mc)) return "Choisis un mot de passe différent de l'ancien.";
+    if (/rate limit|over_email_send_rate_limit|too many|over_request_rate_limit/.test(mc)) return "Trop de tentatives, réessaie dans quelques minutes.";
+    if (/password/.test(m) && /(least|short|weak|characters)/.test(m)) return "Mot de passe trop faible (6 caractères minimum).";
+    if (/code_not_found/.test(mc)) return "Ce code d'invitation est introuvable.";
+    if (/space_full/.test(mc)) return "Cet espace est déjà complet.";
+    if (/already_in_space/.test(mc)) return "Ce compte est déjà dans un espace.";
+    if (/failed to fetch|networkerror|network request/.test(mc)) return "Connexion impossible, vérifie ton réseau.";
+    return "Une erreur est survenue, réessaie.";
   }
 
   /* ---------- notifications ----------
@@ -1520,7 +1715,7 @@ function boot(INITIAL_STATE) {
 
   async function persist(mutateFn, opts) {
     if (readOnly) return;
-    if (!session || !session.binId) return;
+    if (!session || !session.spaceId) return;
     if (!pendingMutations.length) lastGoodSnapshot = clone(state);
     mutateFn(state);
     pendingMutations.push(mutateFn);
@@ -1529,35 +1724,31 @@ function boot(INITIAL_STATE) {
     persistTimer = setTimeout(flushPersist, PERSIST_DEBOUNCE_MS);
   }
 
+  // Écrit en base la différence entre la dernière version synchronisée et l'état local
+  // (seules les lignes modifiées partent — plus de réécriture complète d'un gros fichier).
   async function flushPersist() {
     persistTimer = null;
+    if (sbFlushing) { persistTimer = setTimeout(flushPersist, 250); return; }
     var mutations = pendingMutations;
     pendingMutations = [];
     var needsRender = pendingNeedsRender;
     pendingNeedsRender = false;
     if (!mutations.length) return;
+    sbFlushing = true;
     try {
-      // On relit le bin de l'espace juste avant d'écrire (plutôt que de
-      // republier notre `state` local tel quel) pour repartir de la version
-      // la plus fraîche possible et ne pas écraser un ajout/vote du binôme
-      // arrivé entre-temps — puis on rejoue toute la salve de mutations
-      // par-dessus, dans l'ordre.
-      var fresh = await jsonbinRead(session.binId);
-      if (!fresh || !Array.isArray(fresh.items)) fresh = { items: [] };
-      mutations.forEach(function (fn) { fn(fresh); });
-      await jsonbinWrite(session.binId, fresh);
-      state = fresh;
+      var next = sbRowsFromState(state);
+      await sbSaveDiff(sbBaseRows || sbRowsFromState({ items: [] }), next);
+      sbBaseRows = next;
       syncNote = "";
       if (needsRender) render(); else updateNotifPanelAndBadge();
-      notifyAblyChannel(); // prévient le binôme tout de suite, s'il est connecté en ce moment
     } catch (err) {
-      // Jamais loggé nulle part avant — impossible de savoir si c'est un
-      // 429 (quota/débit JSONBin dépassé), une clé invalide, un problème
-      // réseau ponctuel, etc. sans ça.
       console.error("persist() a échoué :", err);
       state = lastGoodSnapshot;
       syncNote = "La synchro a échoué, réessaie.";
       render();
+    } finally {
+      sbFlushing = false;
+      if (refreshDeferred && !persistTimer && !pendingMutations.length) { refreshDeferred = false; refreshSpaceFromServer(); }
     }
   }
 
@@ -1572,7 +1763,7 @@ function boot(INITIAL_STATE) {
       bindSharePage();
       return;
     }
-    if (!dbConfig.indexBinId || !dbConfig.masterKey) { root.innerHTML = renderSetupNeeded(); return; }
+    if (!sb) { root.innerHTML = renderSetupNeeded(); return; }
     if (!session) { root.innerHTML = renderAuth(); bindAuth(); return; }
     if (!spaceLoaded) { root.innerHTML = renderLoadingSpace(); return; }
     myName = session.name;
@@ -1700,7 +1891,7 @@ function boot(INITIAL_STATE) {
   function renderSetupNeeded() {
     return "<div class=\"onboard\"><p class=\"wordmark\">Deux Places <span class=\"beta-badge\">Beta</span></p>" +
       "<h1 class=\"onboard-title\">Configuration requise</h1>" +
-      "<p class=\"onboard-sub\">L'application n'est pas encore reliée à sa base JSONBin. Réessaie plus tard.</p></div>";
+      "<p class=\"onboard-sub\">L'application n'arrive pas à joindre sa base de données. Vérifie ta connexion puis recharge la page.</p></div>";
   }
 
   function renderLoadingSpace() {
@@ -1822,6 +2013,7 @@ function boot(INITIAL_STATE) {
   // habillage que les autres modales (.account-modal-card).
   function renderAuthModal() {
     if (authMode === "reset") return renderResetModalBody();
+    if (authMode === "newpass") return renderNewPassModalBody();
     var showJoinField = authMode === "register";
     return (
       "<div class=\"account-modal-card\">" +
@@ -1831,7 +2023,7 @@ function boot(INITIAL_STATE) {
           "<button type=\"button\" class=\"auth-tab" + (authMode === "login" ? " auth-tab--active" : "") + "\" data-auth-mode=\"login\">Se connecter</button>" +
           "<button type=\"button\" class=\"auth-tab" + (authMode === "register" ? " auth-tab--active" : "") + "\" data-auth-mode=\"register\">Créer un compte</button>" +
         "</div>" +
-        (authError ? "<p class=\"auth-error\">" + escapeHtml(authError) + "</p>" : "") +
+        authMsgHtml() +
         "<form id=\"auth-form\" class=\"onboard-form onboard-form--stacked\">" +
           (authMode === "register" ? "<label class=\"field\"><span>Ton prénom</span><input id=\"auth-name\" type=\"text\" maxlength=\"24\" autocomplete=\"off\" required /></label>" : "") +
           "<label class=\"field\"><span>Email</span><input id=\"auth-email\" type=\"email\" autocomplete=\"username\" required /></label>" +
@@ -1857,28 +2049,43 @@ function boot(INITIAL_STATE) {
     );
   }
 
-  // Réinitialisation "directe" : email + prénom suffisent, il n'y a pas de
-  // vérification par email possible sans backend (voir la discussion dans
-  // le chat — l'alternative solide serait un service tiers type EmailJS,
-  // non implémenté ici). Le prénom filtre un minimum mais ne protège pas
-  // contre quelqu'un qui connaît déjà la personne visée ; voir le message
-  // d'erreur générique dans resetPasswordDirect ci-dessous.
+  function authMsgHtml() {
+    return (authError ? "<p class=\"auth-error\">" + escapeHtml(authError) + "</p>" : "") +
+           (authInfo ? "<p class=\"auth-info\">" + escapeHtml(authInfo) + "</p>" : "");
+  }
+  // Réinitialisation par email : un lien est envoyé à l'adresse du compte — seule la personne qui a accès à cette boîte mail peut choisir un nouveau mot de passe.
   function renderResetModalBody() {
     return (
       "<div class=\"account-modal-card\">" +
         "<button type=\"button\" class=\"account-modal-close\" aria-label=\"Fermer\">&times;</button>" +
         "<p class=\"wordmark auth-modal-wordmark\">Deux Places <span class=\"wordmark-sub\">· Two Seats</span></p>" +
-        "<h3 class=\"screen-title settings-modal-title\">Réinitialiser le mot de passe</h3>" +
-        (authError ? "<p class=\"auth-error\">" + escapeHtml(authError) + "</p>" : "") +
+        "<h3 class=\"screen-title settings-modal-title\">Mot de passe oublié</h3>" +
+        "<p class=\"onboard-sub\">Indique l'email de ton compte : on t'envoie un lien pour choisir un nouveau mot de passe.</p>" +
+        authMsgHtml() +
         "<form id=\"auth-form\" class=\"onboard-form onboard-form--stacked\">" +
-          "<label class=\"field\"><span>Ton prénom</span><input id=\"reset-name\" type=\"text\" maxlength=\"24\" autocomplete=\"off\" required /></label>" +
           "<label class=\"field\"><span>Email</span><input id=\"reset-email\" type=\"email\" autocomplete=\"username\" required /></label>" +
-          "<label class=\"field\"><span>Nouveau mot de passe</span><input id=\"reset-password\" type=\"password\" autocomplete=\"new-password\" minlength=\"6\" required /></label>" +
-          "<label class=\"field\"><span>Confirmer le nouveau mot de passe</span><input id=\"reset-password-confirm\" type=\"password\" autocomplete=\"new-password\" minlength=\"6\" required /></label>" +
           "<button type=\"submit\" class=\"btn btn--primary\"" + (authBusy ? " disabled" : "") + ">" +
-            (authBusy ? "…" : "Réinitialiser le mot de passe") +
+            (authBusy ? "…" : "Envoyer le lien") +
           "</button>" +
           "<button type=\"button\" class=\"account-settings-link\" data-auth-mode=\"login\">← Retour à la connexion</button>" +
+        "</form>" +
+      "</div>"
+    );
+  }
+  // Arrivée par le lien reçu par email : choix du nouveau mot de passe.
+  function renderNewPassModalBody() {
+    return (
+      "<div class=\"account-modal-card\">" +
+        "<button type=\"button\" class=\"account-modal-close\" aria-label=\"Fermer\">&times;</button>" +
+        "<p class=\"wordmark auth-modal-wordmark\">Deux Places <span class=\"wordmark-sub\">· Two Seats</span></p>" +
+        "<h3 class=\"screen-title settings-modal-title\">Nouveau mot de passe</h3>" +
+        authMsgHtml() +
+        "<form id=\"auth-form\" class=\"onboard-form onboard-form--stacked\">" +
+          "<label class=\"field\"><span>Nouveau mot de passe</span><input id=\"newpass-password\" type=\"password\" autocomplete=\"new-password\" minlength=\"6\" required /></label>" +
+          "<label class=\"field\"><span>Confirmer le nouveau mot de passe</span><input id=\"newpass-confirm\" type=\"password\" autocomplete=\"new-password\" minlength=\"6\" required /></label>" +
+          "<button type=\"submit\" class=\"btn btn--primary\"" + (authBusy ? " disabled" : "") + ">" +
+            (authBusy ? "…" : "Enregistrer et me connecter") +
+          "</button>" +
         "</form>" +
       "</div>"
     );
@@ -1887,6 +2094,7 @@ function boot(INITIAL_STATE) {
   function openAuthModal(mode) {
     authMode = mode || "login";
     authError = "";
+    authInfo = "";
     authModalOpen = true;
     var modal = document.getElementById("auth-modal");
     modal.innerHTML = renderAuthModal();
@@ -1917,6 +2125,7 @@ function boot(INITIAL_STATE) {
       btn.addEventListener("click", function () {
         authMode = btn.getAttribute("data-auth-mode");
         authError = "";
+        authInfo = "";
         modal.innerHTML = renderAuthModal();
         bindAuthModal();
       });
@@ -1943,19 +2152,36 @@ function boot(INITIAL_STATE) {
     form.addEventListener("submit", async function (e) {
       e.preventDefault();
       if (authMode === "reset") {
-        var rName = document.getElementById("reset-name").value.trim();
         var rEmail = normalizeEmail(document.getElementById("reset-email").value);
-        var rPassword = document.getElementById("reset-password").value;
-        var rConfirm = document.getElementById("reset-password-confirm").value;
-        if (!rName || !rEmail || !rPassword) return;
-        if (rPassword !== rConfirm) {
+        if (!rEmail) return;
+        authBusy = true; authError = ""; authInfo = ""; modal.innerHTML = renderAuthModal(); bindAuthModal();
+        try {
+          await requestPasswordReset(rEmail);
+          authBusy = false;
+          authInfo = "Si un compte existe pour cette adresse, un email avec un lien vient d'être envoyé. Pense à regarder tes spams.";
+        } catch (err) {
+          authBusy = false;
+          authError = (err && err.message) || "Une erreur est survenue, réessaie.";
+        }
+        modal.innerHTML = renderAuthModal();
+        bindAuthModal();
+        return;
+      }
+      if (authMode === "newpass") {
+        var np1 = document.getElementById("newpass-password").value;
+        var np2 = document.getElementById("newpass-confirm").value;
+        if (!np1) return;
+        if (np1 !== np2) {
           authError = "Les deux mots de passe ne correspondent pas.";
           modal.innerHTML = renderAuthModal(); bindAuthModal();
           return;
         }
         authBusy = true; authError = ""; modal.innerHTML = renderAuthModal(); bindAuthModal();
         try {
-          await resetPasswordDirect(rEmail, rName, rPassword);
+          var up = await sb.auth.updateUser({ password: np1 });
+          if (up.error) throw { message: sbFriendlyError(up.error) };
+          needNewPass = false;
+          await sbEstablishSession(true);
           await finishAuthSuccess();
         } catch (err) {
           authBusy = false;
@@ -1979,7 +2205,15 @@ function boot(INITIAL_STATE) {
       authBusy = true; authError = ""; modal.innerHTML = renderAuthModal(); bindAuthModal();
       try {
         if (authMode === "register") {
-          await registerAccount(email, password, name, joinCode);
+          var reg = await registerAccount(email, password, name, joinCode);
+          if (reg && reg.needsConfirm) {
+            authBusy = false;
+            authMode = "login";
+            authInfo = "Compte créé ! Un email de confirmation vient de t'être envoyé : clique sur le lien, tu seras connecté automatiquement. Pense à regarder tes spams.";
+            modal.innerHTML = renderAuthModal();
+            bindAuthModal();
+            return;
+          }
         } else {
           await loginAccount(email, password, remember);
         }
@@ -2007,184 +2241,199 @@ function boot(INITIAL_STATE) {
     else if (joinCodeFromUrl && !authModalOpen) openAuthModal("register");
   }
 
-  async function registerAccount(email, password, name, joinCode) {
-    var idx = await loadIndex();
-    if (idx.users[email]) throw { message: "Un compte existe déjà avec cet email." };
-    var salt = randomHex(16);
-    var passwordHash = await hashPassword(password, salt);
-    var spaceId, binId, spaceEntry;
-    if (joinCode) {
-      spaceId = Object.keys(idx.spaces).find(function (id) { return idx.spaces[id].inviteCode === joinCode; });
-      if (!spaceId) throw { message: "Ce code d'invitation est introuvable." };
-      spaceEntry = idx.spaces[spaceId];
-      if ((spaceEntry.members || []).length >= 2) throw { message: "Cet espace compte déjà deux membres." };
-      binId = spaceEntry.binId;
-      spaceEntry.members = (spaceEntry.members || []).concat([email]);
-    } else {
-      spaceId = uid();
-      binId = await jsonbinCreate({ items: [] }, "deux-places-space-" + spaceId);
-      spaceEntry = { binId: binId, members: [email], inviteCode: randomInviteCode() };
-      idx.spaces[spaceId] = spaceEntry;
+  /* ---------- comptes (Supabase Auth) ---------- */
+  function sbClearPending() { try { localStorage.removeItem("dp-pending"); } catch (e) {} }
+  function sbReadPending() { try { return JSON.parse(localStorage.getItem("dp-pending") || "null"); } catch (e) { return null; } }
+
+  async function sbLegacyCall(body) {
+    try {
+      var res = await fetch(dbConfig.url + "/functions/v1/legacy-login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "apikey": dbConfig.anonKey, "Authorization": "Bearer " + dbConfig.anonKey },
+        body: JSON.stringify(body)
+      });
+      return await res.json();
+    } catch (e) { return { ok: false, reason: "network" }; }
+  }
+
+  // Après connexion / confirmation d'email : retrouve (ou crée) l'espace de ce compte et mémorise la session locale.
+  async function sbEstablishSession(remember) {
+    var gs = await sb.auth.getSession();
+    var user = gs.data && gs.data.session ? gs.data.session.user : null;
+    if (!user) throw { message: "Connexion impossible, réessaie." };
+    myUserId = user.id;
+    var r = sbChk(await sb.from("space_members").select("member_id,space_id,name").eq("user_id", user.id).eq("active", true).maybeSingle());
+    var spaceId, name;
+    if (r.data) { spaceId = r.data.space_id; name = r.data.name; }
+    else { var made = await sbEnsureMembership(user); spaceId = made.spaceId; name = made.name; }
+    saveSession({ email: user.email, name: name, spaceId: spaceId, binId: spaceId }, remember);
+    return session;
+  }
+
+  // Aucun espace actif pour ce compte (nouveau compte, ou ancien binôme exclu) : rejoint via code d'invitation s'il y en a un, sinon crée un espace.
+  async function sbEnsureMembership(user) {
+    var pending = sbReadPending() || {};
+    var name = (pending.name || (user.user_metadata && user.user_metadata.name) || (session && session.name) || (user.email || "").split("@")[0] || "Moi").trim();
+    var code = (pending.code || joinCodeFromUrl || "").trim().toUpperCase();
+    var spaceId = null;
+    if (code) {
+      var j = await sb.rpc("join_space", { _code: code, _name: name });
+      if (!j.error) spaceId = j.data;
+      else syncNote = sbFriendlyError(j.error) + " Ton espace personnel a été créé à la place.";
     }
-    idx.users[email] = { email: email, name: name, passwordHash: passwordHash, salt: salt, spaceId: spaceId, createdAt: Date.now() };
-    await jsonbinWrite(dbConfig.indexBinId, idx);
-    saveSession({ email: email, name: name, spaceId: spaceId, binId: binId });
+    if (!spaceId) {
+      var c = await sb.rpc("create_space", { _name: name });
+      sbChk(c);
+      spaceId = c.data;
+    }
+    sbClearPending();
+    return { spaceId: spaceId, name: name };
+  }
+
+  async function registerAccount(email, password, name, joinCode) {
+    rememberFlag = true;
+    // Un ancien compte (importé) doit se connecter, pas se recréer : sinon il perdrait son historique.
+    var lg = await sbLegacyCall({ email: email, password: password });
+    if (lg.ok) {
+      var si = await sb.auth.signInWithPassword({ email: email, password: password });
+      if (!si.error) { await sbEstablishSession(true); return {}; }
+    } else if (lg.reason === "bad_password" || lg.reason === "locked") {
+      throw { message: "Un compte existe déjà avec cet email. Connecte-toi (ou utilise « Mot de passe oublié ? »)." };
+    }
+    try { localStorage.setItem("dp-pending", JSON.stringify({ name: name, code: joinCode || "", ts: Date.now() })); } catch (e) {}
+    var r = await sb.auth.signUp({ email: email, password: password,
+      options: { data: { name: name }, emailRedirectTo: location.origin + location.pathname } });
+    if (r.error) { sbClearPending(); throw { message: sbFriendlyError(r.error) }; }
+    if (r.data.user && r.data.user.identities && r.data.user.identities.length === 0) {
+      sbClearPending();
+      throw { message: "Un compte existe déjà avec cet email." };
+    }
+    if (!r.data.session) return { needsConfirm: true };
+    await sbEstablishSession(true);
+    return {};
   }
 
   async function loginAccount(email, password, remember) {
-    var idx = await loadIndex();
-    var user = idx.users[email];
-    if (!user) throw { message: "Aucun compte avec cet email." };
-    var hash = await hashPassword(password, user.salt);
-    if (hash !== user.passwordHash) throw { message: "Mot de passe incorrect." };
-    var spaceEntry = idx.spaces[user.spaceId];
-    if (!spaceEntry) throw { message: "Espace introuvable pour ce compte." };
-    saveSession({ email: email, name: user.name, spaceId: user.spaceId, binId: spaceEntry.binId }, remember);
+    rememberFlag = remember !== false;
+    var r = await sb.auth.signInWithPassword({ email: email, password: password });
+    if (r.error && /invalid login|invalid_credentials/i.test((r.error.message || "") + " " + (r.error.code || ""))) {
+      // Peut-être un compte de l'ancienne version : on vérifie l'ancien mot de passe, puis on le migre.
+      var lg = await sbLegacyCall({ email: email, password: password });
+      if (lg.ok) r = await sb.auth.signInWithPassword({ email: email, password: password });
+      else if (lg.reason === "locked") throw { message: "Trop d'essais, réessaie dans 15 minutes." };
+    }
+    if (r.error) throw { message: sbFriendlyError(r.error) };
+    await sbEstablishSession(remember);
   }
 
-  // "Mot de passe oublié", version "réinitialisation directe" : sans
-  // backend capable d'envoyer un email, il n'y a aucun moyen de vérifier
-  // que la personne qui remplit ce formulaire est bien la propriétaire du
-  // compte — email + prénom suffisent. Le prénom filtre les tentatives
-  // automatisées (un email seul ne suffit plus) mais ne protège pas contre
-  // quelqu'un qui connaît déjà la personne visée ; seule une vraie
-  // vérification par email fermerait ce risque (voir la discussion sur
-  // EmailJS, non implémentée ici).
-  // Le message d'erreur reste volontairement identique que l'email soit
-  // inconnu OU que le prénom ne corresponde pas, pour ne pas laisser
-  // deviner quels emails ont un compte sur l'appli.
-  async function resetPasswordDirect(email, name, newPassword) {
-    var idx = await loadIndex();
-    var user = idx.users[email];
-    if (!user || user.name.trim().toLowerCase() !== name.trim().toLowerCase()) {
-      throw { message: "Email ou prénom incorrect." };
-    }
-    var newSalt = randomHex(16);
-    user.passwordHash = await hashPassword(newPassword, newSalt);
-    user.salt = newSalt;
-    await jsonbinWrite(dbConfig.indexBinId, idx);
-    var spaceEntry = idx.spaces[user.spaceId];
-    saveSession({ email: email, name: user.name, spaceId: user.spaceId, binId: spaceEntry.binId });
+  // "Mot de passe oublié" : un lien est envoyé par email (seule la personne qui a accès à la boîte peut changer le mot de passe).
+  async function requestPasswordReset(email) {
+    await sbLegacyCall({ email: email, mode: "prepare_reset" }); // rend un ancien compte importé réinitialisable
+    var r = await sb.auth.resetPasswordForEmail(email, { redirectTo: location.origin + location.pathname });
+    if (r.error) throw { message: sbFriendlyError(r.error) };
   }
 
   async function changePassword(currentPassword, newPassword) {
-    var idx = await loadIndex();
-    var user = idx.users[session.email];
-    if (!user) throw { message: "Compte introuvable." };
-    var hash = await hashPassword(currentPassword, user.salt);
-    if (hash !== user.passwordHash) throw { message: "Mot de passe actuel incorrect." };
-    var newSalt = randomHex(16);
-    user.passwordHash = await hashPassword(newPassword, newSalt);
-    user.salt = newSalt;
-    await jsonbinWrite(dbConfig.indexBinId, idx);
+    var chk = await sb.auth.signInWithPassword({ email: session.email, password: currentPassword });
+    if (chk.error) throw { message: "Mot de passe actuel incorrect." };
+    var r = await sb.auth.updateUser({ password: newPassword });
+    if (r.error) throw { message: sbFriendlyError(r.error) };
   }
 
-  // Changer de prénom est plus délicat que ça en a l'air : partout ailleurs
-  // dans l'appli, `votes`, `voteTimestamps`, `ratings` et `addedBy` sont
-  // indexés par le PRÉNOM (myName), pas par l'email — donc un simple
-  // changement de nom côté compte laisserait tous les votes/notes déjà
-  // posés orphelins (ils resteraient sous l'ancien prénom, invisibles
-  // pour itemStatus() une fois myName mis à jour). Cette fonction migre
-  // donc aussi chaque item de l'espace vers le nouveau prénom, dans le
-  // même persist() que le reste — pas juste un renommage côté compte.
+  // Changer de prénom : les votes / notes / événements sont liés au membre (pas au prénom),
+  // il suffit donc de renommer le membre puis de recharger l'espace.
   async function renameMyself(newName) {
     var oldName = myName;
     newName = (newName || "").trim();
     if (!newName || newName === oldName) return;
-    var idx = await loadIndex();
-    var taken = Object.keys(idx.users).some(function (em) {
-      return em !== session.email && (idx.users[em].name || "").trim().toLowerCase() === newName.toLowerCase();
+    await loadIndex();
+    var taken = Object.keys(indexCache.users).some(function (k) {
+      return k !== session.email && (indexCache.users[k].name || "").trim().toLowerCase() === newName.toLowerCase();
     });
     if (taken) throw { message: "Ce prénom est déjà pris par ton binôme." };
-    if (idx.users[session.email]) idx.users[session.email].name = newName;
-    await jsonbinWrite(dbConfig.indexBinId, idx);
-    indexCache = idx;
-    await persist(function (s) {
-      s.items.forEach(function (item) {
-        if (item.addedBy === oldName) item.addedBy = newName;
-        if (item.votes && Object.prototype.hasOwnProperty.call(item.votes, oldName)) {
-          item.votes[newName] = item.votes[oldName];
-          delete item.votes[oldName];
-        }
-        if (item.voteTimestamps && Object.prototype.hasOwnProperty.call(item.voteTimestamps, oldName)) {
-          item.voteTimestamps[newName] = item.voteTimestamps[oldName];
-          delete item.voteTimestamps[oldName];
-        }
-        if (item.ratings && Object.prototype.hasOwnProperty.call(item.ratings, oldName)) {
-          item.ratings[newName] = item.ratings[oldName];
-          delete item.ratings[oldName];
-        }
-      });
-      (s.events || []).forEach(function (e) { if (e.by === oldName) e.by = newName; });
-      ["seen", "cleared", "notifPrefs"].forEach(function (k) {
-        if (s[k] && Object.prototype.hasOwnProperty.call(s[k], oldName)) { s[k][newName] = s[k][oldName]; delete s[k][oldName]; }
-      });
-    });
+    sbChk(await sb.rpc("rename_me", { _name: newName }));
     myName = newName;
     try { localStorage.setItem("dp-name", newName); } catch (e) { /* stockage indisponible */ }
-    saveSession({ email: session.email, name: newName, spaceId: session.spaceId, binId: session.binId });
+    resaveSession({ name: newName });
+    var loaded = await sbLoadState();
+    if (loaded) { state = loaded.state; sbBaseRows = sbRowsFromState(state); }
   }
 
-  // Couleur d'avatar au choix — juste un champ de plus sur le compte,
-  // aucune migration nécessaire contrairement au renommage (rien d'autre
-  // dans l'espace n'est indexé par couleur).
   async function setAvatarColor(color) {
-    var idx = await loadIndex();
-    if (idx.users[session.email]) idx.users[session.email].avatarColor = color;
-    await jsonbinWrite(dbConfig.indexBinId, idx);
-    indexCache = idx;
+    sbChk(await sb.rpc("set_avatar_color", { _color: color }));
+    await loadIndex();
   }
 
-  // Retire ce compte de l'espace partagé actuel et lui crée un nouvel espace
-  // personnel vide — l'ex-binôme garde l'espace et ses films tels quels, et
-  // récupère la possibilité d'inviter quelqu'un d'autre à sa place.
+  // Quitter l'espace partagé : on en crée un nouveau, vide ; l'ex-binôme garde l'ancien tel quel.
   async function leaveSharedSpace() {
-    var idx = await loadIndex();
-    var oldSpaceEntry = idx.spaces[session.spaceId];
-    if (oldSpaceEntry) {
-      oldSpaceEntry.members = (oldSpaceEntry.members || []).filter(function (e) { return e !== session.email; });
-    }
-    var newSpaceId = uid();
-    var newBinId = await jsonbinCreate({ items: [] }, "deux-places-space-" + newSpaceId);
-    idx.spaces[newSpaceId] = { binId: newBinId, members: [session.email], inviteCode: randomInviteCode() };
-    idx.users[session.email].spaceId = newSpaceId;
-    await jsonbinWrite(dbConfig.indexBinId, idx);
+    await flushNowIfPending();
+    sbChk(await sb.rpc("leave_space"));
     disconnectAblyChannel();
-    saveSession({ email: session.email, name: session.name, spaceId: newSpaceId, binId: newBinId });
-    indexCache = idx;
+    var c = sbChk(await sb.rpc("create_space", { _name: session.name }));
+    resaveSession({ spaceId: c.data, binId: c.data });
+    indexCache = null; myMemberId = null;
     spaceLoaded = false;
     await loadCurrentSpace();
   }
 
-  // L'inverse de leaveSharedSpace() : ici c'est le BINÔME qui est éjecté,
-  // pas nous — on garde notre espace et ses films, lui repart sur un
-  // espace vide (même mécanique que ci-dessus, juste appliquée à son
-  // compte). Le message Ably "excluded" est le seul moyen de le
-  // déconnecter tout de suite s'il est en ligne à ce moment précis — sans
-  // ça (ou sans Ably configuré), sa session locale resterait valide
-  // jusqu'à sa prochaine connexion explicite (voir la discussion dans le
-  // chat). Ce n'est donc pas une garantie absolue, juste un mieux.
+  // Exclure le binôme : il garde ses films ? non — il repart sur un espace vide à sa prochaine ouverture ; nous gardons l'espace.
   async function excludePartner() {
-    var idx = await loadIndex();
-    var entry = idx.spaces[session.spaceId];
-    var members = entry ? (entry.members || []) : [];
-    var partnerEmail = members.filter(function (e) { return e !== session.email; })[0];
-    if (!partnerEmail) return;
-    entry.members = members.filter(function (e) { return e === session.email; });
-    var newSpaceId = uid();
-    var newBinId = await jsonbinCreate({ items: [] }, "deux-places-space-" + newSpaceId);
-    idx.spaces[newSpaceId] = { binId: newBinId, members: [partnerEmail], inviteCode: randomInviteCode() };
-    if (idx.users[partnerEmail]) idx.users[partnerEmail].spaceId = newSpaceId;
-    await jsonbinWrite(dbConfig.indexBinId, idx);
-    indexCache = idx;
-    if (ablyChannel) { try { ablyChannel.publish("excluded", { email: partnerEmail }); } catch (e) {} }
+    await loadIndex();
+    var p = partnerInfo();
+    if (!p || !p.memberId) return;
+    sbChk(await sb.rpc("exclude_member", { _member: p.memberId }));
+    await loadIndex();
+  }
+
+  async function sbWipeSpace() {
+    await flushNowIfPending();
+    sbChk(await sb.rpc("wipe_space"));
+    state = { items: [] };
+    sbBaseRows = sbRowsFromState(state);
+  }
+
+  // Met à jour la session locale en gardant l'endroit de stockage (localStorage ou sessionStorage) déjà choisi.
+  function resaveSession(patch) {
+    var s = Object.assign({}, session, patch);
+    var inLocal = false;
+    try { inLocal = !!localStorage.getItem("dp-session"); } catch (e) {}
+    saveSession(s, inLocal ? true : (rememberFlag ? true : false));
+  }
+
+  async function flushNowIfPending() {
+    if (persistTimer) { clearTimeout(persistTimer); await flushPersist(); }
+    var guard = 0;
+    while (sbFlushing && guard++ < 50) await new Promise(function (r) { setTimeout(r, 100); });
+  }
+
+  // Mon espace n'existe plus pour moi (exclu depuis un autre appareil / par mon binôme) : on repart sur un espace neuf.
+  async function sbRecoverMembership() {
+    disconnectAblyChannel();
+    var gs = await sb.auth.getSession();
+    var user = gs.data && gs.data.session ? gs.data.session.user : null;
+    if (!user) { clearSession(true); return false; }
+    var r = sbChk(await sb.from("space_members").select("member_id,space_id,name").eq("user_id", user.id).eq("active", true).maybeSingle());
+    var spaceId, name;
+    if (r.data) { spaceId = r.data.space_id; name = r.data.name; }
+    else { var made = await sbEnsureMembership(user); spaceId = made.spaceId; name = made.name; }
+    resaveSession({ spaceId: spaceId, binId: spaceId, name: name });
+    indexCache = null; myMemberId = null;
+    return true;
   }
 
   async function loadCurrentSpace() {
     if (!session) return;
     try {
-      var data = await jsonbinRead(session.binId);
-      state = (data && Array.isArray(data.items)) ? data : { items: [] };
+      var loaded = await sbLoadState();
+      if (!loaded) {
+        var ok = await sbRecoverMembership();
+        if (!ok) { spaceLoaded = false; render(); return; }
+        loaded = await sbLoadState();
+      }
+      if (!loaded) throw new Error("espace introuvable");
+      state = loaded.state;
+      sbBaseRows = sbRowsFromState(state);
+      if (loaded.me.name !== session.name) resaveSession({ name: loaded.me.name });
       spaceLoaded = true;
       myName = session.name;
       render();
@@ -2193,9 +2442,8 @@ function boot(INITIAL_STATE) {
       if (replay.length) presentIncomingNotifications(replay);
       ensureSeenBaseline();
       startLiveSync();
-      // Précharge l'index (binôme, code d'invitation, couleurs) en silence : la 1re ouverture de la modale compte / du profil est alors immédiate, sans reconstruction.
-      if (!indexCache) loadIndex().catch(function () {});
     } catch (err) {
+      console.error("loadCurrentSpace() a échoué :", err);
       syncNote = "Impossible de charger ton espace pour l'instant.";
       spaceLoaded = true; // évite de rester bloqué sur l'écran de chargement
       state = { items: [] };
@@ -2250,78 +2498,56 @@ function boot(INITIAL_STATE) {
     });
   }
 
-  // Aucune vérification automatique en boucle, et plus de filet de
-  // sécurité au retour sur l'onglet non plus (désactivé sur demande) :
-  // seul Ably prévient d'un changement (ajout, vote, match…), s'il est
-  // configuré et que le binôme est connecté en même temps. Sans Ably (ou
-  // si le binôme n'est pas là au même moment), rien ne se met à jour tant
-  // qu'on ne change pas d'onglet vers "à trier"/"matchs" (voir le clic sur
-  // les onglets, qui déclenche son propre appel de rattrapage) ou qu'on
-  // ne recharge pas la page.
+  // Temps réel : Supabase prévient dès qu'une ligne de cet espace change (ajout, vote, match, notification…).
+  // Plus aucune clé tierce : la synchro instantanée fait partie de la base.
+  var liveTimer = null;
   function startLiveSync() {
     connectAblyChannel();
   }
-
-  // Connexion temps réel (facultative — désactivée si aucune clé Ably n'est
-  // configurée, l'appli reste alors utilisable normalement, juste sans
-  // notification instantanée côté binôme). Le canal est propre à cet espace
-  // (spaceId) : seuls les deux comptes qui le partagent peuvent s'y croiser.
   function connectAblyChannel() {
-    if (!dbConfig.ablyKey || !session || typeof Ably === "undefined") return;
+    if (!sb || !session) return;
+    disconnectAblyChannel();
     try {
-      if (ablyClient) ablyClient.close();
-      ablyClient = new Ably.Realtime({ key: dbConfig.ablyKey, clientId: myClientId });
-      ablyChannel = ablyClient.channels.get("deux-places-" + session.spaceId);
-      ablyChannel.subscribe("update", function (msg) {
-        if (msg.clientId === myClientId) return; // notre propre action, déjà appliquée localement
-        refreshSpaceFromServer();
+      var sid = session.spaceId;
+      var ch = sb.channel("space-" + sid);
+      ["items", "item_votes", "item_ratings", "events", "member_prefs", "space_members"].forEach(function (t) {
+        ch.on("postgres_changes", { event: "*", schema: "public", table: t, filter: "space_id=eq." + sid }, scheduleLiveRefresh);
       });
-      // Déconnexion forcée si ce message nous vise — voir excludePartner().
-      // Après ça, session est vide donc render() retombe naturellement sur
-      // l'écran de connexion (voir le tout début de render()).
-      ablyChannel.subscribe("excluded", function (msg) {
-        if (!session || !msg.data || msg.data.email !== session.email) return;
-        clearSession();
-        disconnectAblyChannel();
-        state = { items: [] };
-        spaceLoaded = false;
-        render();
-      });
-    } catch (e) { /* pas grave, l'appli continue sans synchro instantanée */ }
+      ch.subscribe();
+      ablyChannel = ch;
+    } catch (e) { /* pas grave : l'appli continue, juste sans synchro instantanée */ }
   }
   function disconnectAblyChannel() {
-    if (ablyChannel) { try { ablyChannel.unsubscribe(); } catch (e) {} ablyChannel = null; }
-    if (ablyClient) { try { ablyClient.close(); } catch (e) {} ablyClient = null; }
+    if (liveTimer) { clearTimeout(liveTimer); liveTimer = null; }
+    if (ablyChannel) { try { sb.removeChannel(ablyChannel); } catch (e) {} ablyChannel = null; }
   }
-  // Prévient le binôme, s'il est connecté au même canal en ce moment, qu'une
-  // action vient d'avoir lieu de notre côté — appelé juste après une
-  // écriture réussie dans persist().
-  function notifyAblyChannel() {
-    if (ablyChannel) { try { ablyChannel.publish("update", { at: Date.now() }); } catch (e) {} }
+  function scheduleLiveRefresh() {
+    if (liveTimer) clearTimeout(liveTimer);
+    liveTimer = setTimeout(function () { liveTimer = null; refreshSpaceFromServer(); }, 350);
   }
+  // Plus besoin de prévenir le binôme à la main : la base s'en charge.
+  function notifyAblyChannel() {}
 
-  // Objectif : réduire au maximum les appels au bin JSON pour un
-  // rafraîchissement en arrière-plan, tout en gardant la modale "Match !"
-  // réactive partout — un match reste un des moments forts de l'appli,
-  // pas question de le rater juste parce qu'on est sur "Vus"/"Ajouter"/
-  // "Bibliothèque" au mauvais moment. Donc : l'appel réseau se fait sur
-  // tous les onglets, mais seul "à trier"/"matchs" redessine l'écran et
-  // affiche les toasts (ajout/vote/vu) ; ailleurs, seul un match ouvre sa
-  // modale (overlay indépendant de #root, ne perturbe rien à l'écran —
-  // voir openMatchModal), le reste de la mise à jour reste silencieux
-  // (state est quand même tenu à jour, l'écran se remettra à niveau au
-  // prochain changement d'onglet).
+  // Relit l'espace et ne touche à l'écran que si le binôme a réellement bougé quelque chose.
+  // Les changements de l'onglet "à trier"/"matchs" redessinent l'écran ; ailleurs seuls les matchs ouvrent leur fenêtre.
   async function refreshSpaceFromServer() {
-    if (!session || readOnly || accountModalOpen) return;
+    if (!session || readOnly || accountModalOpen || !spaceLoaded) return;
+    if (persistTimer || pendingMutations.length || sbFlushing) { refreshDeferred = true; return; }
     var onLiveTab = activeTab === "trier" || activeTab === "matchs";
     try {
-      var data = await jsonbinRead(session.binId);
-      if (!data || !Array.isArray(data.items)) return;
-      // On ne fait quoi que ce soit que si le binôme a réellement bougé
-      // quelque chose (ajout, vote, suppression...) — sinon on ne touche pas
-      // à l'écran.
-      var changedItems = JSON.stringify(data.items) !== JSON.stringify(state.items);
-      var changedMeta = JSON.stringify([data.events, data.seen, data.cleared, data.notifPrefs]) !== JSON.stringify([state.events, state.seen, state.cleared, state.notifPrefs]);
+      var loaded = await sbLoadState();
+      if (persistTimer || pendingMutations.length || sbFlushing) { refreshDeferred = true; return; }
+      if (!loaded) {
+        // plus membre de cet espace (exclu) : on repart sur un espace neuf
+        spaceLoaded = false; render();
+        await loadCurrentSpace();
+        return;
+      }
+      var data = loaded.state;
+      if (loaded.me.name !== session.name) { resaveSession({ name: loaded.me.name }); myName = loaded.me.name; }
+      var changedItems = sstr(data.items, true) !== sstr(state.items, true);
+      var changedMeta = sstr([data.events, data.seen, data.cleared, data.notifPrefs], true) !== sstr([state.events, state.seen, state.cleared, state.notifPrefs], true);
+      sbBaseRows = sbRowsFromState(data);
       if (!changedItems && !changedMeta) return;
       var incoming = newIncomingEvents(state, data);
       state = data;
@@ -2331,9 +2557,9 @@ function boot(INITIAL_STATE) {
       } else {
         var matchEvents = incoming.filter(function (e) { return e.type === "match"; });
         if (matchEvents.length) presentIncomingNotifications(matchEvents);
-        updateNotifPanelAndBadge(); // badge / panneau à jour (ex : notifs lues sur un autre appareil)
+        updateNotifPanelAndBadge();
       }
-    } catch (err) { console.error("refreshSpaceFromServer() a échoué :", err); /* on retentera au prochain tick */ }
+    } catch (err) { console.error("refreshSpaceFromServer() a échoué :", err); /* on retentera au prochain événement */ }
   }
 
   // Swaps the demo card's 3 illustrated placeholder posters for real ones
@@ -2467,7 +2693,7 @@ function boot(INITIAL_STATE) {
   // openAccountModal : reconstruire la carte entière à ce moment-là rejouait
   // son animation d'ouverture, ce qui donnait l'impression d'un rafraîchissement).
   function renderInviteSection() {
-    var full = currentSpaceMemberCount() >= 2;
+    var full = spaceIsFull();
     var inviteCode = (indexCache && session && indexCache.spaces[session.spaceId]) ? indexCache.spaces[session.spaceId].inviteCode : "";
     var joinUrl = location.origin + location.pathname + "?join=" + inviteCode;
     var qrUrl = "https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=" + encodeURIComponent(joinUrl);
@@ -2620,7 +2846,7 @@ function boot(INITIAL_STATE) {
       clearMoviesBtn.disabled = true;
       clearMoviesBtn.textContent = "Suppression…";
       try {
-        await jsonbinWrite(session.binId, { items: [] });
+        await sbWipeSpace();
         state = { items: [] };
         closeAccountModal();
         render();
@@ -2728,7 +2954,7 @@ function boot(INITIAL_STATE) {
   // mélangée à l'apparence/mot de passe). Même famille de fonctions que
   // les autres modales (openX/closeX/bindX).
   function renderSpaceModal() {
-    var full = currentSpaceMemberCount() >= 2;
+    var full = spaceIsFull();
     return (
       "<div class=\"account-modal-card\">" +
         "<button type=\"button\" class=\"account-modal-close\" aria-label=\"Fermer\">&times;</button>" +
@@ -2925,7 +3151,7 @@ function boot(INITIAL_STATE) {
   function renderProfil() {
     var user = indexCache && session ? indexCache.users[session.email] : null;
     var partner = partnerInfo();
-    var full = currentSpaceMemberCount() >= 2;
+    var full = spaceIsFull();
     var themeOptions = [["system", "Système"], ["light", "Clair"], ["dark", "Sombre"]];
     var pName = partner ? partner.name : null;
     var html = "<div class=\"em-page\">";
@@ -3180,7 +3406,7 @@ function boot(INITIAL_STATE) {
       clearMoviesBtn.disabled = true;
       clearMoviesBtn.textContent = "Suppression…";
       try {
-        await jsonbinWrite(session.binId, { items: [] });
+        await sbWipeSpace();
         state = { items: [] };
         render();
       } catch (err) {
@@ -7559,6 +7785,7 @@ function boot(INITIAL_STATE) {
   "color:var(--ink-dim);cursor:pointer;transition:background .18s ease,color .18s ease,box-shadow .18s ease;}" +
 ".auth-tab--active{background:var(--surface);color:var(--ink);box-shadow:0 1px 4px rgba(0,0,0,.12);}" +
 ".auth-error{color:var(--match);font-size:.85rem;margin:.4rem 0;animation:authFormIn .2s ease;}" +
+".auth-info{color:var(--ink);background:var(--surface-2);border-radius:10px;font-size:.85rem;line-height:1.4;margin:.5rem 0;padding:.6rem .75rem;animation:authFormIn .2s ease;}" +
 "@keyframes authFormIn{from{opacity:0;transform:translateY(8px);}to{opacity:1;transform:translateY(0);}}" +
 ".onboard-form--stacked{display:flex;flex-direction:column;gap:.7rem;width:100%;" +
   "animation:onboard-in .5s ease .28s both;}" +
@@ -8485,9 +8712,35 @@ function boot(INITIAL_STATE) {
   (async function start() {
     if (isShareRoute()) { render(); loadSharePage(); return; }
     render();
-    if (dbConfig.masterKey && dbConfig.indexBinId && session) {
-      await loadCurrentSpace();
+    if (!sb) return;
+    sb.auth.onAuthStateChange(function (ev) {
+      if (ev === "PASSWORD_RECOVERY") needNewPass = true;
+      if (ev === "SIGNED_OUT" && session && !sbSigningOut) {
+        setTimeout(function () {
+          if (!session) return;
+          clearSession(true); disconnectAblyChannel(); spaceLoaded = false; state = { items: [] }; render();
+        }, 0);
+      }
+    });
+    var gs = await sb.auth.getSession();
+    var sbs = gs.data && gs.data.session;
+    if (needNewPass && sbs) {
+      clearSession(true); spaceLoaded = false; render();
+      openAuthModal("newpass");
+      return;
     }
+    if (!sbs) { if (session) { clearSession(true); render(); } return; }
+    myUserId = sbs.user.id;
+    if (!session) {
+      // retour du lien de confirmation d'email : on termine la création de l'espace
+      try { await sbEstablishSession(true); } catch (e) { console.error(e); render(); return; }
+      spaceLoaded = false; render();
+    }
+    await loadCurrentSpace();
+    // Au retour sur l'onglet / l'appli : on rattrape ce qui a pu être manqué (connexion temps réel coupée en veille).
+    document.addEventListener("visibilitychange", function () {
+      if (document.visibilityState === "visible" && session && spaceLoaded) { connectAblyChannel(); refreshSpaceFromServer(); }
+    });
   })();
 }
 window.__dpGate.then(function(){ if(!window.__dpBlock) boot({ items: [] }); });
