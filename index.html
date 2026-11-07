@@ -1826,7 +1826,7 @@ function boot(INITIAL_STATE) {
     bindImageLightbox();
     bindTrailerLinks();
     syncTabbarHeight();
-    if (lastRenderedTab !== activeTab) { document.documentElement.classList.remove("tabbar-hidden"); hideUndoToast(); lastRenderedTab = activeTab; }
+    if (lastRenderedTab !== activeTab) { document.documentElement.classList.remove("tabbar-hidden"); tbAnchor = window.scrollY || 0; hideUndoToast(); lastRenderedTab = activeTab; }
   }
 
   // Hauteur réelle de la barre d'onglets (la barre de vote se pose juste au-dessus) + masquage au scroll vers le bas (mobile).
@@ -1835,21 +1835,38 @@ function boot(INITIAL_STATE) {
     var tb = document.querySelector(".tabbar");
     if (tb) document.documentElement.style.setProperty("--tabbar-h", tb.offsetHeight + "px");
   }
+  // Règles : jamais masquée si la page défile à peine ; masquée après 24 px de descente, ré-affichée après 14 px de remontée ;
+  // toujours visible près du haut et tout en bas (évite le clignotement de l'effet « élastique » iOS) ; un appui sur le bord bas la ramène
+  // (sauf quand la barre de vote occupe ce bord).
+  var tbAnchor = 0;
   function bindTabbarAutoHide() {
-    var lastY = window.scrollY || 0, ticking = false;
+    var ticking = false;
     var root = document.documentElement;
+    function setHidden(h, y) { root.classList.toggle("tabbar-hidden", h); tbAnchor = y; }
     window.addEventListener("scroll", function () {
       if (ticking) return;
       ticking = true;
       requestAnimationFrame(function () {
         ticking = false;
         if (window.innerWidth >= 900) { root.classList.remove("tabbar-hidden"); return; }
-        var y = Math.max(0, window.scrollY || 0), d = y - lastY;
-        if (y < 60) { root.classList.remove("tabbar-hidden"); lastY = y; }
-        else if (d > 8) { root.classList.add("tabbar-hidden"); lastY = y; }
-        else if (d < -8) { root.classList.remove("tabbar-hidden"); lastY = y; }
+        var y = Math.max(0, window.scrollY || 0);
+        var maxY = Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
+        var hidden = root.classList.contains("tabbar-hidden");
+        if (maxY < 240 || y < 60 || y >= maxY - 8) { if (hidden) setHidden(false, y); else tbAnchor = y; return; }
+        if (hidden) {
+          if (y > tbAnchor) tbAnchor = y;
+          else if (tbAnchor - y > 14) setHidden(false, y);
+        } else {
+          if (y < tbAnchor) tbAnchor = y;
+          else if (y - tbAnchor > 24) setHidden(true, y);
+        }
       });
     }, { passive: true });
+    document.addEventListener("click", function (e) {
+      if (window.innerWidth >= 900 || !root.classList.contains("tabbar-hidden")) return;
+      if (document.getElementById("vote-bar")) return;
+      if (e.clientY >= window.innerHeight - 28) setHidden(false, Math.max(0, window.scrollY || 0));
+    });
     window.addEventListener("resize", syncTabbarHeight);
   }
 
