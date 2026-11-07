@@ -1278,7 +1278,8 @@ function boot(INITIAL_STATE) {
     { k: "match",   icon: "🎉", label: "Matchs",       desc: "Toujours recommandé", def: true },
     { k: "remind",  icon: "⏰", label: "Rappels doux", desc: "Si l'autre attend ton avis depuis 2 jours", def: true },
     { k: "weekend", icon: "🍿", label: "Soirée film",  desc: "Le vendredi soir, une idée parmi vos matchs", def: true },
-    { k: "avail",   icon: "📺", label: "Disponibilité", desc: "Quand un de vos matchs arrive en streaming", def: true }
+    { k: "avail",   icon: "📺", label: "Disponibilité", desc: "Quand un de vos matchs arrive ou quitte le streaming", def: true },
+    { k: "rate",    icon: "🌟", label: "Rappel de noter", desc: "Le lendemain d'un titre vu, si tu ne l'as pas noté", def: true }
   ];
   function notifPrefsOf(st) { return (st && st.notifPrefs && st.notifPrefs[myName]) || {}; }
   function notifKeyOfType(type) { return type === "unvote" ? "vote" : type; }
