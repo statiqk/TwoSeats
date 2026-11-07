@@ -8819,6 +8819,38 @@ function boot(INITIAL_STATE) {
       spaceLoaded = false; render();
     }
     await loadCurrentSpace();
+    // Lien profond des notifications push : ?item=<id> à l'ouverture, ou message du service worker si l'appli est déjà ouverte.
+    function openItemFromLink(id) {
+      if (!id) return false;
+      var it = (state.items || []).filter(function (x) { return String(x.id) === String(id); })[0];
+      if (!it) return false;
+      var st = itemStatus(it);
+      var tab = st === "watched" ? "vus" : st === "matched" ? "matchs" : (st === "pending" && !(it.votes && it.votes[myName] !== undefined)) ? "trier" : "bibliotheque";
+      activeTab = tab; render();
+      setTimeout(function () {
+        var card = document.querySelector("article.stub[data-id=\"" + String(it.id).replace(/"/g, "") + "\"]");
+        if (!card) return;
+        try { card.scrollIntoView({ behavior: "smooth", inline: "center", block: "center" }); } catch (e) {}
+        card.style.transition = "box-shadow .4s";
+        card.style.boxShadow = "0 0 0 3px #ffb238";
+        setTimeout(function () { card.style.boxShadow = ""; }, 2200);
+      }, 250);
+      return true;
+    }
+    function itemIdFromUrl(u) {
+      try { return new URL(u, location.href).searchParams.get("item"); } catch (e) { return null; }
+    }
+    if ("serviceWorker" in navigator) {
+      navigator.serviceWorker.addEventListener("message", function (e) {
+        if (e.data && e.data.type === "dp-open") openItemFromLink(itemIdFromUrl(e.data.url));
+      });
+    }
+    var linkedId = itemIdFromUrl(location.href);
+    if (linkedId) {
+      try { history.replaceState(null, "", location.pathname + location.hash); } catch (e) {}
+      var tries = 0;
+      var tv = setInterval(function () { if (openItemFromLink(linkedId) || ++tries > 20) clearInterval(tv); }, 500);
+    }
     // Au retour sur l'onglet / l'appli : on rattrape ce qui a pu être manqué (connexion temps réel coupée en veille).
     document.addEventListener("visibilitychange", function () {
       if (document.visibilityState === "visible" && session && spaceLoaded) { connectAblyChannel(); refreshSpaceFromServer(); }

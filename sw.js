@@ -24,6 +24,7 @@ self.addEventListener("push", function (event) {
     tag: data.tag || undefined,
     icon: "./icon-192.png",
     badge: "./icon-192.png",
+    image: data.image || undefined,
     data: { url: data.url || "./" }
   }));
 });
@@ -33,7 +34,11 @@ self.addEventListener("notificationclick", function (event) {
   var target = (event.notification.data && event.notification.data.url) || "./";
   event.waitUntil(self.clients.matchAll({ type: "window", includeUncontrolled: true }).then(function (list) {
     for (var i = 0; i < list.length; i++) {
-      if ("focus" in list[i]) return list[i].focus();
+      if ("focus" in list[i]) {
+        // appli déjà ouverte : on lui dit quelle fiche ouvrir, puis on la met au premier plan
+        try { list[i].postMessage({ type: "dp-open", url: target }); } catch (e) {}
+        return list[i].focus();
+      }
     }
     return self.clients.openWindow(target);
   }));
