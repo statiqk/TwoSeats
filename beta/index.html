@@ -141,6 +141,8 @@ function boot(INITIAL_STATE) {
   // or persisted, reset to "all" automatically by renderTrier() itself if
   // it ever points at a type nothing in the queue has anymore (see there).
   var trierTypeFilter = "all";
+  // Onglet Matchs : titre à la une, fiche ouverte, repère « Nouveau » (valeur de lastSeenMatchsAt avant d'ouvrir l'onglet).
+  var matchsFeatId = null, matchsOpenId = null, matchsNewSince = null;
   // Progression de la file « À trier » : total de la session (grandit si de nouveaux titres arrivent), pour afficher « 2 / 10 ».
   var trierTotal = 0, trierPrevLen = 0;
   // Filtres/recherche de la page "Bibliothèque" — même famille que
@@ -4218,31 +4220,79 @@ function boot(INITIAL_STATE) {
     return html;
   }
 
+  // Plateforme en streaming (ou gratuite) où le titre est disponible, s'il y en a une.
+  function matchProviderName(item) {
+    var wp = item.watchProviders;
+    if (!wp) return "";
+    var l = (wp.flatrate || []).concat(wp.free || []);
+    return l.length ? String(l[0].name || "") : "";
+  }
+
+  function matchRailCard(item, isNew, showProv) {
+    var pn = showProv ? matchProviderName(item) : "";
+    return "<button type=\"button\" class=\"mx-rc\" data-match-open=\"" + escapeHtml(item.id) + "\">" +
+      "<span class=\"mx-rc-im\">" +
+      (item.posterUrl ? "<img src=\"" + escapeHtml(item.posterUrl) + "\" alt=\"\" loading=\"lazy\" />" : "<span class=\"mx-rc-ph\">" + escapeHtml(item.title) + "</span>") +
+      (isNew ? "<span class=\"mx-new\">NEW</span>" : "") +
+      (pn ? "<span class=\"mx-pf\">" + escapeHtml(pn) + "</span>" : "") +
+      "</span><span class=\"mx-rc-t\">" + escapeHtml(item.title) + "</span></button>";
+  }
+
+  function matchRail(title, list, newIds, showProv) {
+    if (!list.length) return "";
+    var h = "<div class=\"mx-rh\"><span>" + title + "</span><small>" + list.length + "</small></div><div class=\"mx-rail\">";
+    list.forEach(function (it) { h += matchRailCard(it, !!newIds[it.id], showProv); });
+    return h + "</div>";
+  }
+
   function renderMatchs() {
-    // Most-recently-matched first — see renderVus() just below for the same
-    // pattern with "vus"/watchedAt; matches without a matchedAt (matched
-    // before this field existed) sort to the bottom, into the mini-grid.
+    // Plus récent d'abord ; les matchs sans matchedAt (anciens) passent à la fin.
     var matched = state.items.filter(function (i) { return itemStatus(i) === "matched"; })
       .slice()
       .sort(function (a, b) { return (b.matchedAt || 0) - (a.matchedAt || 0); });
-    var html = "<div class=\"screen-head\"><p class=\"eyebrow\">Matchs</p><h2 class=\"screen-title\">Vos matchs</h2></div>";
     if (!matched.length) {
-      html += "<p class=\"empty\">Aucun match pour l'instant. Votez sur des liens dans « À trier ».</p>";
-      return html;
+      matchsOpenId = null;
+      return "<div class=\"screen-head\"><p class=\"eyebrow\">Matchs</p><h2 class=\"screen-title\">Vos matchs</h2></div>" +
+        "<p class=\"empty\">Aucun match pour l'instant. Votez sur des liens dans « À trier ».</p>";
     }
-    // Only the 5 most recent get the full ticket-stub carousel treatment;
-    // everything older sits below as a compact grid, same as "vus".
-    var recentMatched = matched.slice(0, 5);
-    var olderMatched = matched.slice(5);
-    html += renderCarousel("matchs-track", recentMatched, function (item) {
+    var since = matchsNewSince === null ? lastSeenMatchsAt : matchsNewSince;
+    var newIds = {};
+    matched.forEach(function (it) { if ((it.matchedAt || 0) > since) newIds[it.id] = true; });
+
+    // À la une : le dernier choisi avec « Un autre », sinon le plus récent
+    var feat = matched.filter(function (i) { return i.id === matchsFeatId; })[0] || matched[0];
+    matchsFeatId = feat.id;
+    var pn = matchProviderName(feat);
+    var metaParts = [];
+    if (feat.year) metaParts.push(feat.year);
+    metaParts.push(TYPE_LABEL[feat.type] || "");
+    if (feat.genres && feat.genres[0]) metaParts.push(feat.genres[0]);
+    var html = "<section class=\"mx-hero\">" +
+      (feat.posterUrl ? "<img class=\"mx-hero-bg\" src=\"" + escapeHtml(feat.posterUrl) + "\" alt=\"\" />" : "") +
+      "<button type=\"button\" class=\"mx-hero-poster\" data-match-open=\"" + escapeHtml(feat.id) + "\" aria-label=\"Voir la fiche\">" +
+        (feat.posterUrl ? "<img src=\"" + escapeHtml(feat.posterUrl) + "\" alt=\"\" />" : "<span>" + escapeHtml(feat.title) + "</span>") + "</button>" +
+      "<div class=\"mx-hero-tx\"><p class=\"mx-kick\">On regarde ça ce soir ?</p>" +
+        "<h3 class=\"mx-hero-title\">" + escapeHtml(feat.title) + "</h3>" +
+        "<p class=\"mx-hero-meta\">" + escapeHtml(metaParts.join(" · ")) + "</p>" +
+        (pn ? "<p class=\"mx-hero-prov\">📺 " + escapeHtml(pn) + "</p>" : "") + "</div></section>" +
+      "<div class=\"mx-hero-actions\" data-id=\"" + escapeHtml(feat.id) + "\">" +
+        "<button type=\"button\" class=\"btn btn--primary\" data-watched=\"1\">Marquer comme vu</button>" +
+        "<button type=\"button\" class=\"btn btn--ghost\" data-matchs-other=\"1\"" + (matched.length < 2 ? " disabled" : "") + ">🎲 Un autre</button></div>";
+
+    html += matchRail("Nouveaux", matched.filter(function (i) { return newIds[i.id]; }), newIds, false);
+    html += matchRail("Dispo en streaming", matched.filter(function (i) { return matchProviderName(i); }), newIds, true);
+    html += matchRail("Tous les matchs", matched, newIds, false);
+
+    // Fiche complète d'un match, en feuille par-dessus la page
+    var open = matchsOpenId && matched.filter(function (i) { return i.id === matchsOpenId; })[0];
+    if (open) {
       var footer = "<div class=\"stub-actions stub-actions--single\"><button class=\"btn btn--ghost\" data-watched=\"1\">Marquer comme vu</button></div>";
-      return renderStub(item, { showVotes: true, footer: footer });
-    });
-    if (olderMatched.length) {
-      html += "<p class=\"mini-grid-label\">Le reste (" + olderMatched.length + ")</p>";
-      html += "<div class=\"mini-grid\">";
-      olderMatched.forEach(function (item) { html += renderMatchMiniCard(item); });
-      html += "</div>";
+      html += "<div class=\"mx-sheet-ov\" data-match-close=\"1\"><div class=\"mx-sheet\" role=\"dialog\" aria-modal=\"true\">" +
+        "<span class=\"rate-grab\" aria-hidden=\"true\"></span>" +
+        "<button type=\"button\" class=\"mx-sheet-x\" data-match-close=\"1\" aria-label=\"Fermer\">&times;</button>" +
+        renderStub(open, { showVotes: true, footer: footer }) + "</div></div>";
+    } else {
+      matchsOpenId = null;
     }
     return html;
   }
@@ -4841,6 +4891,7 @@ function boot(INITIAL_STATE) {
         // the very render() below already reflects "caught up", rather
         // than the badge lingering for one extra frame.
         if (activeTab === "matchs") {
+          if (lastRenderedTab !== "matchs") matchsNewSince = lastSeenMatchsAt;
           lastSeenMatchsAt = Date.now();
           try { localStorage.setItem("dp-matchs-seen", String(lastSeenMatchsAt)); } catch (e) { /* storage unavailable */ }
         }
@@ -5798,15 +5849,33 @@ function boot(INITIAL_STATE) {
   }
 
   function bindMatchs() {
-    bindCarousel("matchs-track");
-    // closest("[data-id]") rather than closest(".stub") — this button now
-    // shows up both on the full carousel stub and on the compact mini-grid
-    // card (renderMatchMiniCard), and both carry a data-id on their root.
+    // « Marquer comme vu » : sur le titre à la une et dans la fiche (le parent le plus proche porte data-id).
     document.querySelectorAll("[data-watched]").forEach(function (btn) {
       btn.addEventListener("click", function () {
         var id = btn.closest("[data-id]").getAttribute("data-id");
+        matchsOpenId = null;
         markWatched(id);
       });
+    });
+    document.querySelectorAll("[data-match-open]").forEach(function (el) {
+      el.addEventListener("click", function () {
+        matchsOpenId = el.getAttribute("data-match-open");
+        render();
+      });
+    });
+    document.querySelectorAll("[data-match-close]").forEach(function (el) {
+      el.addEventListener("click", function (e) {
+        if (e.target !== el) return; // le fond ferme, pas un clic dans la fiche
+        matchsOpenId = null;
+        render();
+      });
+    });
+    var other = document.querySelector("[data-matchs-other]");
+    if (other) other.addEventListener("click", function () {
+      var pool = state.items.filter(function (i) { return itemStatus(i) === "matched" && i.id !== matchsFeatId; });
+      if (!pool.length) return;
+      matchsFeatId = pool[Math.floor(Math.random() * pool.length)].id;
+      render();
     });
   }
 
@@ -6887,6 +6956,7 @@ function boot(INITIAL_STATE) {
       // "Pas le bon titre ?" search input is focused (it auto-focuses itself
       // on open) — otherwise Escape could never close that editor at all.
       if (e.key === "Escape") {
+        if (matchsOpenId) { matchsOpenId = null; render(); return; }
         if (editingChoiceId) { editingChoiceId = null; render(); }
         return;
       }
@@ -8918,6 +8988,39 @@ function boot(INITIAL_STATE) {
   ".tab--fab .tab-icon svg{width:24px;height:24px;stroke-width:2.6;}" +
   ".tab--fab.tab--active .tab-icon{box-shadow:0 0 0 3px var(--surface),0 0 0 5px var(--accent);}" +
 "}" +
+// ---- Onglet Matchs : à la une + rangées + fiche en feuille ----
+".mx-hero{position:relative;height:13.2rem;margin:-.15rem -1.25rem 0;overflow:hidden;}" +
+".mx-hero-bg{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;filter:blur(22px) brightness(.55);transform:scale(1.25);}" +
+".mx-hero:after{content:\"\";position:absolute;inset:0;background:linear-gradient(180deg,transparent 25%,var(--bg) 100%);pointer-events:none;}" +
+".mx-hero-poster{position:absolute;right:1.25rem;top:.8rem;width:5.8rem;height:8.7rem;z-index:1;padding:0;border:0;border-radius:.6rem;overflow:hidden;" +
+  "background:var(--surface-2);box-shadow:0 8px 24px rgba(0,0,0,.5);cursor:pointer;color:var(--ink);font:inherit;font-size:.7rem;}" +
+".mx-hero-poster img{width:100%;height:100%;object-fit:cover;display:block;}" +
+".mx-hero-tx{position:absolute;left:1.25rem;right:8.2rem;bottom:.5rem;z-index:2;}" +
+".mx-kick{margin:0;font-family:'Space Mono',monospace;font-size:.62rem;font-weight:700;letter-spacing:.16em;text-transform:uppercase;color:var(--accent);}" +
+".mx-hero-title{margin:.2rem 0 0;font-size:1.55rem;line-height:1.05;font-weight:600;}" +
+".mx-hero-meta{margin:.3rem 0 0;font-size:.72rem;color:var(--ink-dim);}" +
+".mx-hero-prov{margin:.2rem 0 0;font-size:.76rem;font-weight:600;color:#6fd3a1;}" +
+".mx-hero-actions{display:flex;gap:.5rem;}" +
+".mx-hero-actions .btn{border-radius:.8rem;padding:.75rem .5rem;}" +
+".mx-hero-actions .btn--primary{flex:1.4;}.mx-hero-actions .btn--ghost{flex:1;border:1px solid var(--border);}" +
+".mx-hero-actions .btn:disabled{opacity:.45;}" +
+".mx-rh{display:flex;justify-content:space-between;align-items:baseline;margin:1.2rem 0 .55rem;font-weight:700;font-size:.92rem;}" +
+".mx-rh small{color:var(--ink-dim);font-weight:400;font-size:.76rem;}" +
+".mx-rail{display:flex;gap:.65rem;overflow-x:auto;margin:0 -1.25rem;padding:0 1.25rem .3rem;scroll-snap-type:x proximity;scrollbar-width:none;-webkit-overflow-scrolling:touch;}" +
+".mx-rail::-webkit-scrollbar{display:none;}" +
+".mx-rc{flex:0 0 6.2rem;background:none;border:0;padding:0;color:inherit;font:inherit;text-align:left;cursor:pointer;scroll-snap-align:start;}" +
+".mx-rc-im{display:block;position:relative;height:9.2rem;border-radius:.75rem;overflow:hidden;border:1px solid var(--border);background:var(--surface-2);}" +
+".mx-rc-im img{width:100%;height:100%;object-fit:cover;display:block;}" +
+".mx-rc-ph{display:flex;align-items:flex-end;justify-content:center;height:100%;padding:.4rem;font-size:.66rem;font-weight:700;text-align:center;}" +
+".mx-rc-t{display:block;margin-top:.35rem;font-size:.76rem;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}" +
+".mx-new{position:absolute;left:.3rem;top:.3rem;background:var(--accent);color:var(--accent-ink);border-radius:.5rem;padding:.12rem .4rem;font-family:'Space Mono',monospace;font-size:.56rem;font-weight:700;letter-spacing:.1em;}" +
+".mx-pf{position:absolute;right:.3rem;top:.3rem;background:rgba(20,21,28,.9);border:1px solid #3b6b52;color:#6fd3a1;border-radius:.5rem;padding:.12rem .4rem;font-size:.56rem;font-weight:700;}" +
+".mx-sheet-ov{position:fixed;inset:0;z-index:80;background:rgba(5,6,10,.72);display:flex;align-items:flex-end;justify-content:center;}" +
+".mx-sheet{position:relative;width:100%;max-width:520px;max-height:90dvh;overflow-y:auto;background:var(--surface);border-radius:1.4rem 1.4rem 0 0;" +
+  "padding:.6rem .9rem calc(1rem + env(safe-area-inset-bottom));}" +
+".mx-sheet .stub{max-width:none;border:0;box-shadow:none;background:transparent;}" +
+".mx-sheet-x{position:absolute;right:.7rem;top:.5rem;z-index:3;width:2.1rem;height:2.1rem;border-radius:50%;border:0;background:var(--surface-2);color:var(--ink);font-size:1.3rem;line-height:1;cursor:pointer;}" +
+"body:has(.mx-sheet-ov){overflow:hidden;}" +
 ".tabbar{position:fixed;z-index:10;bottom:0;left:0;right:0;display:flex;justify-content:center;gap:.25rem;" +
   "background:var(--surface);border-top:1px dashed var(--border);padding:.7rem 1rem calc(.7rem + env(safe-area-inset-bottom));" +
   // 5 onglets tiennent large sur la plupart des écrans, mais sur les très
@@ -9096,6 +9199,7 @@ function boot(INITIAL_STATE) {
       if (!it) return false;
       var st = itemStatus(it);
       var tab = st === "watched" ? "vus" : st === "matched" ? "matchs" : (st === "pending" && !(it.votes && it.votes[myName] !== undefined)) ? "trier" : "bibliotheque";
+      if (tab === "matchs") matchsOpenId = String(it.id);
       activeTab = tab; render();
       setTimeout(function () {
         var card = document.querySelector("article.stub[data-id=\"" + String(it.id).replace(/"/g, "") + "\"]");
