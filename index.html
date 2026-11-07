@@ -3617,6 +3617,14 @@ function boot(INITIAL_STATE) {
     }
   }
   var GEAR_SVG = "<svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><circle cx=\"12\" cy=\"12\" r=\"3\"></circle><path d=\"M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z\"></path></svg>";
+  var NOTIF_ICONS = {"phone": "<rect x=\"7\" y=\"2.5\" width=\"10\" height=\"19\" rx=\"2.5\"/><path d=\"M11 18.5h2\"/>", "moon": "<path d=\"M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z\"/>", "bolt": "<path d=\"M13 2 4 14h7l-1 8 10-12.5h-7z\"/>", "bell": "<path d=\"M6 9a6 6 0 0 1 12 0c0 6 2.5 7.5 2.5 7.5h-17S6 15 6 9z\"/><path d=\"M10 20a2 2 0 0 0 4 0\"/>", "clapper": "<rect x=\"3\" y=\"8\" width=\"18\" height=\"12\" rx=\"2\"/><path d=\"M3 12h18M3.5 8 6 4l3.5 4M8.5 8 11 4l3.5 4M13.5 8 16 4l3.5 4\"/>", "thumb": "<path d=\"M7 11v9H4.5a1 1 0 0 1-1-1v-7a1 1 0 0 1 1-1zM7 11l4-8a2.2 2.2 0 0 1 2.2 2.6L12.6 9H19a2 2 0 0 1 2 2.3l-1.2 7A2 2 0 0 1 17.8 20H7\"/>", "check": "<circle cx=\"12\" cy=\"12\" r=\"9\"/><path d=\"m8 12.5 2.7 2.7L16 9.5\"/>", "star": "<path d=\"m12 2.5 3.1 6.3 6.9 1-5 4.9 1.2 6.9-6.2-3.3-6.2 3.3L7 14.7 2 9.8l6.9-1z\"/>", "trash": "<path d=\"M4 7h16M10 11v6M14 11v6M6 7l1 13a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-13M9 7V4h6v3\"/>", "heart": "<path d=\"M12 20.5S3.5 15 3.5 9A4.5 4.5 0 0 1 12 7a4.5 4.5 0 0 1 8.5 2c0 6-8.5 11.5-8.5 11.5z\"/>", "alarm": "<circle cx=\"12\" cy=\"13\" r=\"7\"/><path d=\"M12 9.5V13l2.5 1.5M4 5.5 7 3M20 5.5 17 3\"/>", "popcorn": "<path d=\"M6 10l1.5 11h9L18 10M9.7 10l.6 11M14.3 10l-.6 11\"/><path d=\"M6 10a2.6 2.6 0 0 1 1.4-4.6 3 3 0 0 1 4.6-1.9 3 3 0 0 1 4.6 1.9A2.6 2.6 0 0 1 18 10z\"/>", "tv": "<rect x=\"3\" y=\"6\" width=\"18\" height=\"12\" rx=\"2\"/><path d=\"M9 21h6M8 3l4 3 4-3\"/>", "award": "<circle cx=\"12\" cy=\"9\" r=\"6\"/><path d=\"m8.5 14-1.5 7 5-3 5 3-1.5-7\"/>", "layers": "<path d=\"m12 3-9 5 9 5 9-5z\"/><path d=\"m3 13 9 5 9-5\"/>", "power": "<path d=\"M12 3v8\"/><path d=\"M6.4 6.6a8 8 0 1 0 11.2 0\"/>"};
+  var NOTIF_TYPE_ICON = { added: "clapper", vote: "thumb", watched: "check", rated: "star", removed: "trash", match: "heart", remind: "alarm", weekend: "popcorn", avail: "tv", rate: "award" };
+  function nIco(name, size) {
+    return "<span class=\"notif-ico\" aria-hidden=\"true\"><svg viewBox=\"0 0 24 24\" width=\"" + (size || 17) + "\" height=\"" + (size || 17) + "\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\">" + (NOTIF_ICONS[name] || "") + "</svg></span>";
+  }
+  function nMini(name, on, attrs, label) {
+    return "<button type=\"button\" class=\"notif-mini" + (on ? " notif-mini--on" : "") + "\" role=\"switch\" aria-checked=\"" + on + "\" aria-label=\"" + escapeHtml(label) + "\" " + attrs + "><svg viewBox=\"0 0 24 24\" width=\"16\" height=\"16\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.9\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\">" + NOTIF_ICONS[name] + "</svg></button>";
+  }
   function notifSw(on, attrs, label) {
     return "<button type=\"button\" class=\"notif-sw" + (on ? " notif-sw--on" : "") + "\" role=\"switch\" aria-checked=\"" + on + "\" aria-label=\"" + escapeHtml(label) + "\" " + attrs + "></button>";
   }
@@ -3624,7 +3632,7 @@ function boot(INITIAL_STATE) {
     var open = notifSecOpen === id;
     return "<div class=\"notif-sec" + (open ? " notif-sec--open" : "") + "\">" +
       "<button type=\"button\" class=\"notif-sec-hd\" data-nact=\"sec\" data-sec=\"" + id + "\" aria-expanded=\"" + open + "\">" +
-        "<span class=\"notif-set-ic\" aria-hidden=\"true\">" + icon + "</span><span class=\"notif-sec-t\">" + escapeHtml(title) + "</span>" +
+        nIco(icon) + "<span class=\"notif-sec-t\">" + escapeHtml(title) + "</span>" +
         "<span class=\"notif-sec-sum\">" + escapeHtml(summary) + "</span><span class=\"notif-sec-ch\" aria-hidden=\"true\">" + (open ? "▾" : "▸") + "</span></button>" +
       (open ? "<div class=\"notif-sec-bd\">" + inner + "</div>" : "") + "</div>";
   }
@@ -3636,32 +3644,32 @@ function boot(INITIAL_STATE) {
     var dev = "<div class=\"notif-st notif-st--" + st.k + "\"><span class=\"notif-st-dot\"></span><span class=\"notif-set-tx\">" + escapeHtml(st.t) + "<small>" + escapeHtml(st.s) + "</small></span>" +
       (st.on ? "<button type=\"button\" class=\"notif-st-btn\" data-nact=\"ptest\">Tester</button>" : "") + "</div>" +
       (pushHint ? "<p class=\"notif-set-hint\">" + escapeHtml(pushHint) + "</p>" : "") +
-      "<div class=\"notif-set-row\"><span class=\"notif-set-ic\" aria-hidden=\"true\">📲</span><span class=\"notif-set-tx\">Push sur cet appareil<small>Être prévenu même appli fermée</small></span>" + notifSw(pushOn, "data-nact=\"push\"", "Notifications sur cet appareil") + "</div>" +
-      "<div class=\"notif-set-row\"><span class=\"notif-set-ic\" aria-hidden=\"true\">🌙</span><span class=\"notif-set-tx\">Heures calmes<small>Aucune alerte de 23 h à 8 h</small></span>" + notifSw(p.quiet === true, "data-nact=\"pref\" data-key=\"quiet\"", "Heures calmes") + "</div>";
+      "<div class=\"notif-set-row\">" + nIco("phone") + "<span class=\"notif-set-tx\">Push sur cet appareil<small>Être prévenu même appli fermée</small></span>" + notifSw(pushOn, "data-nact=\"push\"", "Notifications sur cet appareil") + "</div>" +
+      "<div class=\"notif-set-row\">" + nIco("moon") + "<span class=\"notif-set-tx\">Heures calmes<small>Aucune alerte de 23 h à 8 h</small></span>" + notifSw(p.quiet === true, "data-nact=\"pref\" data-key=\"quiet\"", "Heures calmes") + "</div>";
     // — En direct (cloche / push)
     var live = "<div class=\"notif-cols\"><span>Cloche</span><span>Push</span></div>" + LIVE.map(function (k) {
       var t = T(k);
-      return "<div class=\"notif-set-row\"><span class=\"notif-set-ic\" aria-hidden=\"true\">" + t.icon + "</span><span class=\"notif-set-tx\">" + escapeHtml(t.label) + "<small>" + escapeHtml(t.desc) + "</small></span>" +
-        "<span class=\"notif-two\">" + notifSw(notifRawTypeOn(state, k), "data-nact=\"pref\" data-key=\"" + k + "\"", t.label + " dans la cloche") +
-        notifSw(notifPushTypeOn(state, k), "data-nact=\"pushpref\" data-key=\"" + k + "\"", t.label + " en push") + "</span></div>";
+      return "<div class=\"notif-set-row\">" + nIco(NOTIF_TYPE_ICON[k]) + "<span class=\"notif-set-tx\">" + escapeHtml(t.label) + "</span>" +
+        "<span class=\"notif-two\">" + nMini("bell", notifRawTypeOn(state, k), "data-nact=\"pref\" data-key=\"" + k + "\"", t.label + " dans la cloche") +
+        nMini("phone", notifPushTypeOn(state, k), "data-nact=\"pushpref\" data-key=\"" + k + "\"", t.label + " en push") + "</span></div>";
     }).join("");
     var liveOn = LIVE.filter(function (k) { return notifRawTypeOn(state, k) || notifPushTypeOn(state, k); }).length;
     // — Rappels et suggestions (push uniquement)
     var sched = SCHED.map(function (k) {
       var t = T(k);
-      return "<div class=\"notif-set-row\"><span class=\"notif-set-ic\" aria-hidden=\"true\">" + t.icon + "</span><span class=\"notif-set-tx\">" + escapeHtml(t.label) + "<small>" + escapeHtml(t.desc) + "</small></span>" +
+      return "<div class=\"notif-set-row\">" + nIco(NOTIF_TYPE_ICON[k]) + "<span class=\"notif-set-tx\">" + escapeHtml(t.label) + "<small>" + escapeHtml(t.desc) + "</small></span>" +
         notifSw(notifRawTypeOn(state, k), "data-nact=\"pref\" data-key=\"" + k + "\"", t.label) + "</div>";
     }).join("");
     var schedOn = SCHED.filter(function (k) { return notifRawTypeOn(state, k); }).length;
     // — Cloche
     var gOn = notifGroupOn(state);
-    var bell = "<div class=\"notif-set-row\"><span class=\"notif-set-ic\" aria-hidden=\"true\">🗂️</span><span class=\"notif-set-tx\">Regrouper dans la cloche<small>Les actions du même type à la suite</small></span>" + notifSw(gOn, "data-nact=\"pref\" data-key=\"group\"", "Regrouper dans la cloche") + "</div>";
+    var bell = "<div class=\"notif-set-row\">" + nIco("layers") + "<span class=\"notif-set-tx\">Regrouper dans la cloche<small>Les actions du même type à la suite</small></span>" + notifSw(gOn, "data-nact=\"pref\" data-key=\"group\"", "Regrouper dans la cloche") + "</div>";
     return "<div class=\"notif-set\">" +
-      notifSection("device", "📲", "Cet appareil", st.short + (p.quiet === true ? " · calme" : ""), dev) +
-      notifSection("live", "⚡", "En direct", liveOn + " sur " + LIVE.length + " actifs", live) +
-      notifSection("sched", "🔔", "Rappels et suggestions", schedOn + " sur " + SCHED.length + " actifs", sched) +
-      notifSection("bell", "🔔", "Cloche", gOn ? "Regroupement activé" : "Regroupement coupé", bell) +
-      "<div class=\"notif-kill\"><span class=\"notif-set-tx\">Tout couper<small>Met en pause la cloche et les push</small></span>" + notifSw(p.pause === true, "data-nact=\"pref\" data-key=\"pause\"", "Tout couper") + "</div>" +
+      notifSection("device", "phone", "Cet appareil", st.short + (p.quiet === true ? " · calme" : ""), dev) +
+      notifSection("live", "bolt", "En direct", liveOn + " sur " + LIVE.length + " actifs", live) +
+      notifSection("sched", "alarm", "Rappels et suggestions", schedOn + " sur " + SCHED.length + " actifs", sched) +
+      notifSection("bell", "bell", "Cloche", gOn ? "Regroupement activé" : "Regroupement coupé", bell) +
+      "<div class=\"notif-kill\">" + nIco("power") + "<span class=\"notif-set-tx\">Tout couper<small>Met en pause la cloche et les push</small></span>" + notifSw(p.pause === true, "data-nact=\"pref\" data-key=\"pause\"", "Tout couper") + "</div>" +
       "</div>";
   }
   function renderNotifPanel(log) {
@@ -6980,8 +6988,12 @@ function boot(INITIAL_STATE) {
 ".notif-sec-ch{color:var(--accent);font-size:.75rem;width:.9rem;text-align:center;}" +
 ".notif-sec-bd{padding:0 0 .5rem;}" +
 ".notif-cols{display:flex;justify-content:flex-end;gap:.55rem;font-size:.66rem;color:var(--ink-dim);padding-right:.1rem;}" +
-".notif-cols span,.notif-two .notif-sw{width:2.3rem;text-align:center;}" +
-".notif-two{display:flex;gap:.55rem;flex:none;}" +
+".notif-cols{gap:.4rem;}" +
+".notif-cols span{width:2.1rem;text-align:center;}" +
+".notif-two{display:flex;gap:.4rem;flex:none;}" +
+".notif-ico{width:1.9rem;height:1.9rem;border-radius:.6rem;background:var(--surface-2);color:var(--ink);display:flex;align-items:center;justify-content:center;flex:none;}" +
+".notif-mini{width:2.1rem;height:1.85rem;border-radius:.6rem;border:1px solid var(--border);background:var(--surface-2);color:var(--ink-dim);display:flex;align-items:center;justify-content:center;padding:0;cursor:pointer;transition:background .15s,color .15s;}" +
+".notif-mini--on{background:rgba(255,178,56,.16);border-color:rgba(255,178,56,.45);color:var(--accent);}" +
 ".notif-st{display:flex;align-items:center;gap:.6rem;border-radius:.8rem;padding:.6rem .7rem;margin:.1rem 0 .4rem;font-size:.82rem;background:var(--surface-2);}" +
 ".notif-st-dot{width:.6rem;height:.6rem;border-radius:50%;flex:none;background:var(--ink-dim);}" +
 ".notif-st--ok .notif-st-dot{background:#5bd68a;}" +
