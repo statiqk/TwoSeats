@@ -19,14 +19,23 @@ self.addEventListener("push", function (event) {
   var data = {};
   try { data = event.data ? event.data.json() : {}; } catch (e) { data = { body: event.data ? event.data.text() : "" }; }
   var title = data.title || "Deux Places";
-  event.waitUntil(self.registration.showNotification(title, {
+  var jobs = [self.registration.showNotification(title, {
     body: data.body || "",
     tag: data.tag || undefined,
     icon: "./icon-192.png",
     badge: "./icon-192.png",
     image: data.image || undefined,
+    vibrate: data.vibrate || undefined,
     data: { url: data.url || "./" }
-  }));
+  })];
+  // Pastille sur l'icône de l'appli (appli installée) : nombre de titres qui attendent ton vote
+  try {
+    if (typeof data.badgeCount === "number" && self.navigator) {
+      if (data.badgeCount > 0 && self.navigator.setAppBadge) jobs.push(self.navigator.setAppBadge(data.badgeCount));
+      else if (data.badgeCount === 0 && self.navigator.clearAppBadge) jobs.push(self.navigator.clearAppBadge());
+    }
+  } catch (e) {}
+  event.waitUntil(Promise.all(jobs.map(function (p) { return Promise.resolve(p).catch(function () {}); })));
 });
 
 self.addEventListener("notificationclick", function (event) {
