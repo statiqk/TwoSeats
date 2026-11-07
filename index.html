@@ -1275,7 +1275,9 @@ function boot(INITIAL_STATE) {
     { k: "watched", icon: "✅", label: "Titres vus",   desc: "Quand un titre est marqué comme vu", def: true },
     { k: "rated",   icon: "⭐", label: "Notes",        desc: "Quand l'autre note un titre", def: true },
     { k: "removed", icon: "🗑️", label: "Suppressions", desc: "Quand un titre est retiré de la liste", def: false },
-    { k: "match",   icon: "🎉", label: "Matchs",       desc: "Toujours recommandé", def: true }
+    { k: "match",   icon: "🎉", label: "Matchs",       desc: "Toujours recommandé", def: true },
+    { k: "remind",  icon: "⏰", label: "Rappels doux", desc: "Si l'autre attend ton avis depuis 2 jours", def: true },
+    { k: "weekend", icon: "🍿", label: "Soirée film",  desc: "Le vendredi soir, une idée parmi vos matchs", def: true }
   ];
   function notifPrefsOf(st) { return (st && st.notifPrefs && st.notifPrefs[myName]) || {}; }
   function notifKeyOfType(type) { return type === "unvote" ? "vote" : type; }
