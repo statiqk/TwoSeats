@@ -1277,7 +1277,8 @@ function boot(INITIAL_STATE) {
     { k: "removed", icon: "🗑️", label: "Suppressions", desc: "Quand un titre est retiré de la liste", def: false },
     { k: "match",   icon: "🎉", label: "Matchs",       desc: "Toujours recommandé", def: true },
     { k: "remind",  icon: "⏰", label: "Rappels doux", desc: "Si l'autre attend ton avis depuis 2 jours", def: true },
-    { k: "weekend", icon: "🍿", label: "Soirée film",  desc: "Le vendredi soir, une idée parmi vos matchs", def: true }
+    { k: "weekend", icon: "🍿", label: "Soirée film",  desc: "Le vendredi soir, une idée parmi vos matchs", def: true },
+    { k: "avail",   icon: "📺", label: "Disponibilité", desc: "Quand un de vos matchs arrive en streaming", def: true }
   ];
   function notifPrefsOf(st) { return (st && st.notifPrefs && st.notifPrefs[myName]) || {}; }
   function notifKeyOfType(type) { return type === "unvote" ? "vote" : type; }
