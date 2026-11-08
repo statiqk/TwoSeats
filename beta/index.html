@@ -4370,7 +4370,7 @@ function boot(INITIAL_STATE) {
   // cherchable et filtrable ; les 3 autres onglets restent des files de
   // travail (à voter, à fêter, déjà vu) plutôt que des catalogues. Le
   // bandeau du haut donne juste 2-3 chiffres, pas un vrai tableau de bord.
-  function renderBibliotheque() {
+  function renderBibliothequeOld() {
     var all = state.items;
     var html = "<div class=\"screen-head\"><p class=\"eyebrow\">Bibliothèque</p><h2 class=\"screen-title\">Tout ce qu'on a ajouté</h2></div>";
 
@@ -4660,7 +4660,7 @@ function boot(INITIAL_STATE) {
     "</div>";
   }
 
-  function bindBibliotheque() {
+  function bindBibliothequeOld() {
     document.querySelectorAll("[data-delete-id]").forEach(function (btn) {
       btn.addEventListener("click", function (e) {
         e.stopPropagation();
@@ -4849,6 +4849,255 @@ function boot(INITIAL_STATE) {
     return html;
   }
 
+
+
+  /* ---------- Bibliothèque : étagères ---------- */
+  var bibShelf = null;      // null = les étagères ; sinon clé d'une étagère ouverte en grille
+  var bibOpenId = null;     // titre ouvert en fiche (feuille)
+  var bibWebResults = null; // { term, items } — résultats TMDB « pas encore dans la liste »
+  var bibWebToken = 0;
+  var bibWebTimer = null;
+
+  function bibShelfOf(item) {
+    var st = itemStatus(item);
+    if (st === "pending") return item.votes && item.votes[myName] === true ? "waiting" : "todo";
+    return st; // matched | watched | rejected
+  }
+  function bibShelfDefs() {
+    var pn = partnerName();
+    return [
+      { key: "todo", title: "👀 À trier" },
+      { key: "waiting", title: "⏳ En attente de " + (pn || "ton binôme") },
+      { key: "matched", title: "♥ À voir ensemble" },
+      { key: "watched", title: "✓ Déjà vus" },
+      { key: "rejected", title: "✕ Écartés" }
+    ];
+  }
+  function bibStamp(i) { return i.watchedAt || i.matchedAt || i.createdAt || 0; }
+  function bibSortedRecent(list) { return list.slice().sort(function (a, b) { return bibStamp(b) - bibStamp(a); }); }
+  function bibRateText(item) {
+    var a = avgItemRating(item);
+    return a === null ? "" : (Math.round(a * 10) / 10).toString().replace(".", ",") + "★";
+  }
+
+  function bibCardHtml(item, shelfKey) {
+    var tag = "";
+    if (shelfKey === "watched") tag = bibRateText(item);
+    else if (shelfKey === "matched") tag = matchProviderName(item);
+    var tagCls = shelfKey === "watched" ? "mx-pf bx-rate" : "mx-pf";
+    return "<button type=\"button\" class=\"mx-rc\" data-bib-open=\"" + escapeHtml(item.id) + "\">" +
+      "<span class=\"mx-rc-im\">" +
+      (item.posterUrl ? "<img src=\"" + escapeHtml(item.posterUrl) + "\" alt=\"\" loading=\"lazy\" />" : "<span class=\"mx-rc-ph\">" + escapeHtml(item.title) + "</span>") +
+      (tag ? "<span class=\"" + tagCls + "\">" + escapeHtml(tag) + "</span>" : "") +
+      "</span><span class=\"mx-rc-t\">" + escapeHtml(item.title) + "</span></button>";
+  }
+
+  function bibRowHtml(item) {
+    var key = bibShelfOf(item);
+    var label = { todo: "À trier", waiting: "En attente", matched: "Match", watched: "Vu" + (bibRateText(item) ? " " + bibRateText(item) : ""), rejected: "Écarté" }[key];
+    return "<button type=\"button\" class=\"bx-row\" data-bib-open=\"" + escapeHtml(item.id) + "\">" +
+      (item.posterUrl ? "<img src=\"" + escapeHtml(item.posterUrl) + "\" alt=\"\" loading=\"lazy\" />" : "<i></i>") +
+      "<span class=\"bx-row-m\"><b>" + escapeHtml(item.title) + "</b><small>" + escapeHtml([item.year, TYPE_LABEL[item.type] ? TYPE_LABEL[item.type].toLowerCase() : ""].filter(Boolean).join(" · ")) + "</small></span>" +
+      "<span class=\"bx-tag bx-tag--" + key + "\">" + escapeHtml(label) + "</span></button>";
+  }
+
+  function bibRailsBody() {
+    var groups = {};
+    state.items.forEach(function (i) { var k = bibShelfOf(i); (groups[k] = groups[k] || []).push(i); });
+    var html = "";
+    bibShelfDefs().forEach(function (d) {
+      var list = groups[d.key];
+      if (!list || !list.length) return;
+      list = bibSortedRecent(list);
+      if (d.key === "rejected") {
+        html += "<button type=\"button\" class=\"bx-fold\" data-bib-shelf=\"rejected\">" + d.title + " (" + list.length + ") ›</button>";
+        return;
+      }
+      html += "<div class=\"mx-rh\"><span>" + d.title + "</span><button type=\"button\" class=\"bx-all\" data-bib-shelf=\"" + d.key + "\">Voir tout " + list.length + " ›</button></div><div class=\"mx-rail\">";
+      list.slice(0, 12).forEach(function (it) { html += bibCardHtml(it, d.key); });
+      html += "</div>";
+    });
+    return html || "<p class=\"empty\">Rien dans la bibliothèque pour l'instant.</p>";
+  }
+
+  var BIB_SORTS = [["recent", "Récents"], ["rating", "Mieux notés"], ["alpha", "A → Z"], ["year", "Année"]];
+  function bibShelfBody() {
+    var def = bibShelfDefs().filter(function (d) { return d.key === bibShelf; })[0];
+    var all = state.items.filter(function (i) { return bibShelfOf(i) === bibShelf; });
+    var html = "<div class=\"bx-top\"><button type=\"button\" class=\"bx-back\" data-bib-shelf=\"\">‹ Étagères</button>" +
+      "<button type=\"button\" class=\"bx-sort\" data-bib-sort=\"1\">⇅ " + (BIB_SORTS.filter(function (x) { return x[0] === bibSort; })[0] || BIB_SORTS[0])[1] + "</button></div>" +
+      "<h3 class=\"bx-title\">" + escapeHtml(def ? def.title : "") + " · " + all.length + "</h3>";
+    var types = ITEM_TYPES.filter(function (t) { return all.some(function (i) { return i.type === t; }); });
+    var adders = {};
+    all.forEach(function (i) { if (i.addedBy) adders[i.addedBy] = (adders[i.addedBy] || 0) + 1; });
+    var names = Object.keys(adders);
+    var chips = "<button type=\"button\" class=\"ax-chip" + (bibTypeFilter === "all" && bibAdderFilter === "all" ? " ax-chip--on" : "") + "\" data-bib-f=\"all\">Tout " + all.length + "</button>";
+    if (types.length > 1) types.forEach(function (t) {
+      chips += "<button type=\"button\" class=\"ax-chip" + (bibTypeFilter === t ? " ax-chip--on" : "") + "\" data-bib-f=\"type:" + t + "\">" + escapeHtml(TYPE_LABEL[t].charAt(0) + TYPE_LABEL[t].slice(1).toLowerCase()) + "s</button>";
+    });
+    if (names.length > 1) names.forEach(function (n) {
+      chips += "<button type=\"button\" class=\"ax-chip" + (bibAdderFilter === n ? " ax-chip--on" : "") + "\" data-bib-f=\"adder:" + escapeHtml(n) + "\">" + escapeHtml(who(n)) + " " + adders[n] + "</button>";
+    });
+    html += "<div class=\"ax-chips\">" + chips + "</div>";
+    var list = all.filter(function (i) {
+      return (bibTypeFilter === "all" || i.type === bibTypeFilter) && (bibAdderFilter === "all" || i.addedBy === bibAdderFilter);
+    });
+    list = sortBibResults(list);
+    html += list.length
+      ? "<div class=\"bx-grid\">" + list.map(function (i) { return bibCardHtml(i, bibShelf); }).join("") + "</div>"
+      : "<p class=\"ax-empty\">Rien ici avec ces filtres.</p>";
+    return html;
+  }
+
+  function bibSearchBody() {
+    var q = normalizeTitle(bibSearch);
+    var pool = bibShelf ? state.items.filter(function (i) { return bibShelfOf(i) === bibShelf; }) : state.items;
+    var local = bibSortedRecent(pool.filter(function (i) { return normalizeTitle(i.title).indexOf(q) !== -1; }));
+    var html = "";
+    if (bibShelf) html += "<div class=\"bx-top\"><button type=\"button\" class=\"bx-back\" data-bib-shelf=\"\">‹ Étagères</button></div>";
+    html += "<p class=\"bx-lbl\">" + (bibShelf ? "DANS CETTE ÉTAGÈRE" : "DANS VOS ÉTAGÈRES") + "</p>";
+    html += local.length ? "<div class=\"bx-rows\">" + local.map(bibRowHtml).join("") + "</div>" : "<p class=\"ax-empty\" style=\"padding:.8rem 0\">Rien de ce nom dans la liste.</p>";
+    if (!bibShelf && q.length >= 2) {
+      var web = bibWebResults && bibWebResults.term === q ? bibWebResults.items.filter(function (it) { return !alreadyInWatchlist(it) || axAdded[axKey(it)]; }) : null;
+      html += "<p class=\"bx-lbl\">PAS ENCORE DANS LA LISTE</p>";
+      if (web === null) html += "<p class=\"ax-empty\" style=\"padding:.8rem 0\">Recherche…</p>";
+      else if (!web.length) html += "<p class=\"ax-empty\" style=\"padding:.8rem 0\">Aucun autre résultat.</p>";
+      else html += "<div class=\"bx-rows\">" + web.slice(0, 8).map(function (it, idx) {
+        var st = axAdded[axKey(it)];
+        return "<div class=\"bx-row bx-row--web\" data-web-i=\"" + idx + "\">" +
+          (it.posterUrl ? "<img src=\"" + escapeHtml(it.posterUrl) + "\" alt=\"\" loading=\"lazy\" />" : "<i></i>") +
+          "<span class=\"bx-row-m\"><b>" + escapeHtml(it.title) + "</b><small>" + escapeHtml([it.year, TYPE_LABEL[it.type] ? TYPE_LABEL[it.type].toLowerCase() : ""].filter(Boolean).join(" · ")) + "</small></span>" +
+          "<button type=\"button\" class=\"bx-add" + (st ? " bx-add--done" : "") + "\" data-bib-add=\"" + idx + "\">" + (st ? "✓ Ajouté" : "+ Ajouter") + "</button></div>";
+      }).join("") + "</div>";
+    }
+    return html;
+  }
+
+  function bibBodyHtml() {
+    if (bibSearch.trim()) return bibSearchBody();
+    if (bibShelf) return bibShelfBody();
+    return bibRailsBody();
+  }
+
+  function bibSheetHtml() {
+    var item = bibOpenId && state.items.filter(function (i) { return i.id === bibOpenId; })[0];
+    if (!item) { bibOpenId = null; return ""; }
+    var key = bibShelfOf(item), footer = "", pn = partnerName() || "ton binôme";
+    if (key === "todo") footer = "<div class=\"bx-fa\"><button type=\"button\" class=\"btn\" data-bib-vote=\"pass\">✕ Pas envie</button><button type=\"button\" class=\"btn btn--primary\" data-bib-vote=\"yes\">♥ Envie !</button></div>";
+    else if (key === "waiting") footer = "<p class=\"bx-wait\">Tu as dit « Envie ! » — en attente de " + escapeHtml(pn) + ".</p><div class=\"bx-fa\"><button type=\"button\" class=\"btn\" data-bib-vote=\"clear\">Annuler mon envie</button></div>";
+    else if (key === "matched") footer = "<div class=\"bx-fa\"><button type=\"button\" class=\"btn btn--primary\" data-bib-watched=\"1\">Marquer comme vu</button></div>";
+    footer += "<div class=\"bx-fb\"><button type=\"button\" data-share-id=\"" + escapeHtml(item.id) + "\">Recommander à un proche</button><button type=\"button\" class=\"bx-del\" data-bib-del=\"1\">Supprimer</button></div>";
+    return "<div class=\"mx-sheet-ov\" data-bib-close=\"1\"><div class=\"mx-sheet\" role=\"dialog\" aria-modal=\"true\">" +
+      "<span class=\"rate-grab\" aria-hidden=\"true\"></span>" +
+      "<button type=\"button\" class=\"mx-sheet-x\" data-bib-close=\"1\" aria-label=\"Fermer\">&times;</button>" +
+      renderStub(item, { showVotes: true, showRatings: key === "watched", footer: footer }) + "</div></div>";
+  }
+
+  function renderBibliotheque() {
+    if (lastRenderedTab !== "bibliotheque") { bibShelf = null; bibOpenId = null; bibWebResults = null; bibSearch = ""; }
+    var all = state.items;
+    var html = "<div class=\"screen-head\"><p class=\"eyebrow\">Bibliothèque</p><h2 class=\"screen-title\">Vos étagères</h2></div>";
+    if (!all.length) {
+      return html + "<p class=\"empty\">Rien dans la bibliothèque pour l'instant.</p>";
+    }
+    var decided = all.filter(function (i) { return itemStatus(i) !== "pending"; });
+    var ok = decided.filter(function (i) { var s2 = itemStatus(i); return s2 === "matched" || s2 === "watched"; }).length;
+    html += "<p class=\"bx-sum\">" + all.length + " titre" + (all.length > 1 ? "s" : "") + (decided.length ? " · " + Math.round(ok / decided.length * 100) + " % de matchs" : "") + "</p>";
+    html += "<div class=\"search-box bx-search\"><input type=\"search\" id=\"bib-search-input\" placeholder=\"" + (bibShelf ? "Dans cette étagère…" : "Chercher un titre…") + "\" value=\"" + escapeHtml(bibSearch) + "\" autocomplete=\"off\" /></div>";
+    html += "<div id=\"bib-body\">" + bibBodyHtml() + "</div>";
+    html += bibSheetHtml();
+    return html;
+  }
+
+  function bindBibliotheque() {
+    var input = document.getElementById("bib-search-input");
+    var body = document.getElementById("bib-body");
+    if (!input || !body) return;
+    function paint() {
+      body.innerHTML = bibBodyHtml();
+      input.placeholder = bibShelf ? "Dans cette étagère…" : "Chercher un titre…";
+    }
+    function webSearch() {
+      clearTimeout(bibWebTimer);
+      var q = normalizeTitle(bibSearch);
+      if (bibShelf || q.length < 2) return;
+      if (bibWebResults && bibWebResults.term === q) return;
+      bibWebTimer = setTimeout(function () {
+        var tok = ++bibWebToken;
+        searchMovieDB(bibSearch.trim()).then(function (items) {
+          if (tok !== bibWebToken) return;
+          bibWebResults = { term: q, items: items || [] };
+          if (normalizeTitle(bibSearch) === q) paint();
+        }).catch(function () {
+          if (tok !== bibWebToken) return;
+          bibWebResults = { term: q, items: [] };
+          paint();
+        });
+      }, 300);
+    }
+    input.addEventListener("input", function () { bibSearch = input.value; paint(); webSearch(); });
+    if (bibSearch.trim()) webSearch();
+
+    function openSheet(id) { bibOpenId = id; render(); }
+    function closeSheet() { bibOpenId = null; render(); }
+    var root = document.getElementById("root");
+    if (root._bibH) root.removeEventListener("click", root._bibH); // #root survit aux render() : un seul écouteur actif
+    root._bibH = function (e) {
+      var t = e.target;
+      var shelfBtn = t.closest("[data-bib-shelf]");
+      if (shelfBtn) {
+        bibShelf = shelfBtn.getAttribute("data-bib-shelf") || null;
+        bibSearch = ""; input.value = "";
+        bibTypeFilter = "all"; bibAdderFilter = "all"; bibSort = "recent";
+        paint(); window.scrollTo(0, 0); return;
+      }
+      var sortBtn = t.closest("[data-bib-sort]");
+      if (sortBtn) {
+        var idx = BIB_SORTS.map(function (x) { return x[0]; }).indexOf(bibSort);
+        bibSort = BIB_SORTS[(idx + 1) % BIB_SORTS.length][0];
+        if (bibSort === "year") bibYearAsc = false;
+        paint(); return;
+      }
+      var f = t.closest("[data-bib-f]");
+      if (f) {
+        var v = f.getAttribute("data-bib-f");
+        bibTypeFilter = "all"; bibAdderFilter = "all";
+        if (v.indexOf("type:") === 0) bibTypeFilter = v.slice(5);
+        else if (v.indexOf("adder:") === 0) bibAdderFilter = v.slice(6);
+        paint(); return;
+      }
+      var add = t.closest("[data-bib-add]");
+      if (add) {
+        var web = bibWebResults && bibWebResults.items.filter(function (it) { return !alreadyInWatchlist(it) || axAdded[axKey(it)]; })[parseInt(add.getAttribute("data-bib-add"), 10)];
+        if (web) { axAddItem(web, false); add.textContent = "…"; add.classList.add("bx-add--done"); }
+        return;
+      }
+      var open = t.closest("[data-bib-open]");
+      if (open) { openSheet(open.getAttribute("data-bib-open")); return; }
+      var cl = t.closest("[data-bib-close]");
+      if (cl && (cl === t || t.closest(".mx-sheet-x"))) { closeSheet(); return; }
+      var item = bibOpenId && state.items.filter(function (i) { return i.id === bibOpenId; })[0];
+      if (!item) return;
+      var vote = t.closest("[data-bib-vote]");
+      if (vote) {
+        var how = vote.getAttribute("data-bib-vote");
+        bibOpenId = null;
+        if (how === "clear") unvote(item.id); else castVote(item.id, how === "yes");
+        return;
+      }
+      if (t.closest("[data-bib-watched]")) { bibOpenId = null; markWatched(item.id); return; }
+      if (t.closest("[data-bib-del]")) {
+        if (!window.confirm("Supprimer « " + item.title + " » ? Cette action est partagée avec ton binôme et ne peut pas être annulée.")) return;
+        bibOpenId = null;
+        deleteItem(item.id);
+      }
+    };
+    root.addEventListener("click", root._bibH);
+    if (document._bibEsc) document.removeEventListener("keydown", document._bibEsc);
+    document._bibEsc = function (e) { if (e.key === "Escape" && bibOpenId && document.getElementById("bib-body")) closeSheet(); };
+    document.addEventListener("keydown", document._bibEsc);
+    bindStarRatings();
+  }
 
   /* ---------- Ajouter : explorer (grille d'affiches) ---------- */
   var axTab = "trend";        // trend | sorties | series
@@ -9284,6 +9533,30 @@ function boot(INITIAL_STATE) {
 ".mx-sheet .stub{max-width:none;border:0;box-shadow:none;background:transparent;}" +
 ".mx-sheet-x{position:absolute;right:.7rem;top:.5rem;z-index:3;width:2.1rem;height:2.1rem;border-radius:50%;border:0;background:var(--surface-2);color:var(--ink);font-size:1.3rem;line-height:1;cursor:pointer;}" +
 "body:has(.mx-sheet-ov){overflow:hidden;}" +
+".bx-sum{color:var(--ink-dim);font-size:.82rem;margin:-.2rem 0 .8rem;}" +
+".bx-search{max-width:none !important;margin:0 0 .5rem;}" +
+".bx-all{background:none;border:0;color:var(--accent);font:inherit;font-size:.78rem;cursor:pointer;padding:0;}" +
+".bx-fold{display:block;width:100%;text-align:left;background:none;border:0;color:var(--ink-dim);font:inherit;font-size:.88rem;padding:1.3rem 0 .4rem;cursor:pointer;}" +
+".bx-top{display:flex;justify-content:space-between;align-items:center;margin:.5rem 0 .2rem;}" +
+".bx-back,.bx-sort{background:none;border:0;color:var(--accent);font:inherit;font-size:.88rem;cursor:pointer;padding:.2rem 0;}" +
+".bx-title{font-family:'Fraunces',serif;font-size:1.3rem;margin:.2rem 0 .7rem;}" +
+".bx-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:.65rem;}" +
+".bx-grid .mx-rc{flex:none;width:auto;}.bx-grid .mx-rc-im{height:auto;aspect-ratio:2/3;}" +
+".bx-rate{border-color:var(--accent) !important;color:var(--accent) !important;}" +
+".bx-lbl{font-family:'Space Mono',monospace;font-size:.62rem;letter-spacing:.16em;color:var(--ink-dim);margin:1.1rem 0 .5rem;}" +
+".bx-rows{display:flex;flex-direction:column;gap:.5rem;}" +
+".bx-row{display:flex;align-items:center;gap:.75rem;background:var(--surface);border:1px solid var(--border);border-radius:.9rem;padding:.4rem;color:inherit;font:inherit;text-align:left;cursor:pointer;width:100%;box-sizing:border-box;}" +
+".bx-row img,.bx-row i{width:2.6rem;height:3.9rem;border-radius:.5rem;object-fit:cover;background:var(--surface-2);flex:none;display:block;}" +
+".bx-row-m{flex:1;min-width:0;display:flex;flex-direction:column;}" +
+".bx-row-m b{font-size:.9rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}.bx-row-m small{color:var(--ink-dim);font-size:.74rem;}" +
+".bx-tag{font-size:.7rem;border:1px solid var(--border);border-radius:999px;padding:.2rem .6rem;color:var(--ink-dim);flex:none;margin-right:.3rem;}" +
+".bx-tag--matched{color:var(--match);border-color:var(--match);}.bx-tag--watched{color:#6fd6a0;border-color:#6fd6a0;}" +
+".bx-add{flex:none;background:var(--accent);color:var(--accent-ink);border:0;border-radius:999px;padding:.45rem .85rem;font:inherit;font-size:.78rem;font-weight:700;cursor:pointer;margin-right:.3rem;}" +
+".bx-add--done{background:#6fd6a0;color:#0c2016;}" +
+".bx-fa{display:flex;gap:.6rem;margin-top:1rem;}.bx-fa .btn{flex:1;}" +
+".bx-wait{color:var(--ink-dim);font-size:.84rem;margin:.9rem 0 0;text-align:center;}" +
+".bx-fb{display:flex;justify-content:space-between;margin-top:1rem;padding-top:.8rem;border-top:1px solid var(--border);}" +
+".bx-fb button{background:none;border:0;color:var(--ink-dim);font:inherit;font-size:.82rem;cursor:pointer;padding:.2rem 0;}.bx-fb .bx-del{color:#e86a6a;}" +
 ".ax-wrap{max-width:560px;margin:0 auto;}" +
 ".ax-search{display:flex;align-items:center;gap:.6rem;background:var(--surface);border:1px solid var(--border);border-radius:1rem;padding:.2rem .9rem;color:var(--ink-dim);}" +
 ".ax-search:focus-within{border-color:var(--accent);color:var(--ink);}" +
