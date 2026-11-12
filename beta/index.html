@@ -199,6 +199,30 @@ function boot(INITIAL_STATE) {
     { id: "381", name: "Canal+", color: "#2a2a2a" }
   ];
   var suggestionsPlatform = "all";
+  // Vrais logos des services, lus chez TMDB (même source que les pastilles
+  // « Où regarder ») : identifiant -> URL. null = pas encore chargé ; en cas
+  // d'échec on reste sur les carrés de couleur.
+  var providerLogos = null;
+  var providerLogosPromise = null;
+  function loadProviderLogos() {
+    if (providerLogos) return Promise.resolve(providerLogos);
+    if (providerLogosPromise) return providerLogosPromise;
+    if (!TMDB_API_KEY) return Promise.resolve({});
+    providerLogosPromise = fetch("https://api.themoviedb.org/3/watch/providers/movie?api_key=" + TMDB_API_KEY + "&language=fr-FR&watch_region=FR")
+      .then(function (res) { return res.ok ? res.json() : { results: [] }; })
+      .then(function (d) {
+        var map = {};
+        (d.results || []).forEach(function (r) { if (r.logo_path) map[String(r.provider_id)] = "https://image.tmdb.org/t/p/w92" + r.logo_path; });
+        providerLogos = map;
+        return map;
+      })
+      .catch(function () { providerLogosPromise = null; return {}; });
+    return providerLogosPromise;
+  }
+  function providerIconStyle(pl) {
+    var url = providerLogos && providerLogos[pl.id];
+    return url ? "background:url(" + url + ") center/cover no-repeat" : "background:" + pl.color;
+  }
   var suggestionsPlatformCache = {};
   var readOnly = false;
   var syncNote = "";
@@ -4820,7 +4844,7 @@ function boot(INITIAL_STATE) {
       "<div class=\"sugg-platforms\" id=\"sugg-platforms\" role=\"group\" aria-label=\"Plateforme\">" +
         SUGGESTION_PLATFORMS.map(function (pl) {
           return "<button type=\"button\" class=\"sugg-pf" + (suggestionsPlatform === pl.id ? " sugg-pf--on" : "") + "\" data-sugg-platform=\"" + pl.id + "\">" +
-            (pl.id === "all" ? "" : "<i style=\"background:" + pl.color + "\"></i>") + pl.name + "</button>";
+            (pl.id === "all" ? "" : "<i data-pf-icon=\"" + pl.id + "\" style=\"" + providerIconStyle(pl) + "\"></i>") + pl.name + "</button>";
         }).join("") +
       "</div>" +
       "<div class=\"suggestions-carousel\" id=\"suggestions-carousel\">" +
@@ -6602,6 +6626,12 @@ function boot(INITIAL_STATE) {
       suggestionsFetchPromise.then(function (items) { if (tok === loadToken) populate(items); });
     }
     var pfBar = document.getElementById("sugg-platforms");
+    if (pfBar && !providerLogos) loadProviderLogos().then(function (map) {
+      pfBar.querySelectorAll("[data-pf-icon]").forEach(function (i) {
+        var url = map[i.getAttribute("data-pf-icon")];
+        if (url) i.style.background = "url(" + url + ") center/cover no-repeat";
+      });
+    });
     if (pfBar) pfBar.addEventListener("click", function (e) {
       var b = e.target.closest("[data-sugg-platform]"); if (!b) return;
       suggestionsPlatform = b.getAttribute("data-sugg-platform");
