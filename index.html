@@ -204,7 +204,7 @@ function boot(INITIAL_STATE) {
     if (providerLogos) return Promise.resolve(providerLogos);
     if (providerLogosPromise) return providerLogosPromise;
     if (!TMDB_API_KEY) return Promise.resolve({});
-    providerLogosPromise = fetch("https://api.themoviedb.org/3/watch/providers/movie?api_key=" + TMDB_API_KEY + "&language=fr-FR&watch_region=FR")
+    providerLogosPromise = fetchT("https://api.themoviedb.org/3/watch/providers/movie?api_key=" + TMDB_API_KEY + "&language=fr-FR&watch_region=FR")
       .then(function (res) { return res.ok ? res.json() : { results: [] }; })
       .then(function (d) {
         var map = {};
@@ -222,7 +222,6 @@ function boot(INITIAL_STATE) {
   var suggestionsPlatformCache = {};
   var readOnly = false;
   var syncNote = "";
-  var artifactAPI = null;
 
   /* ---------- comptes & espace partagé (Supabase) ----------
      Chaque personne a un vrai compte (email + mot de passe) géré par
@@ -256,7 +255,8 @@ function boot(INITIAL_STATE) {
     if (window.supabase && window.supabase.createClient) {
       sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
         auth: { storage: authStore, storageKey: "dp-sb-auth", persistSession: true, autoRefreshToken: true, detectSessionInUrl: true },
-        realtime: { params: { eventsPerSecond: 10 } }
+        realtime: { params: { eventsPerSecond: 10 } },
+        global: { fetch: function (u, o) { return fetchT(u, o, 20000); } }
       });
     }
   } catch (e) { sb = null; }
@@ -284,7 +284,6 @@ function boot(INITIAL_STATE) {
   // rempli via un lien ?join=, où il doit rester visible tout de suite.
   var joinFieldExpanded = !!joinCodeFromUrl;
   var accountModalOpen = false;
-  var settingsModalOpen = false;
   var spaceModalOpen = false;
   var previewModalOpen = false; // version mobile du panneau d'aperçu "Ajouter" — voir openPreviewModal/renderPreviewPanel
   var authModalOpen = false;
@@ -296,8 +295,6 @@ function boot(INITIAL_STATE) {
   // "Se connecter"/"Créer un compte" rejouait le même délai que l'arrivée
   // sur la page, ce qui donnait une sensation de lenteur au clic.
   var authIntroPlayed = false;
-  var myClientId = uid(); // identifiant stable de cet onglet, pour ignorer nos propres échos Ably
-  var ablyClient = null;
   var ablyChannel = null;
   var notifOpen = false; // notification bell dropdown, local UI-only state
   var notifSettingsOpen = false; // le panneau montre les réglages au lieu de la liste
@@ -341,13 +338,6 @@ function boot(INITIAL_STATE) {
   // inline dans ce cas, pour ne rien changer au rendu existant).
   function avatarStyle(user) {
     return (user && user.avatarColor) ? " style=\"background:" + escapeHtml(user.avatarColor) + "\"" : "";
-  }
-  // Même principe qu'avatarStyle, mais pour la couleur de TEXTE des
-  // tuiles "Profil"/"Réglages" (icône + libellé, via currentColor) —
-  // suit la couleur d'avatar choisie plutôt que l'accent fixe, pour que
-  // ces boutons reflètent aussi le choix personnel de la personne.
-  function tileColorStyle(user) {
-    return (user && user.avatarColor) ? " style=\"color:" + escapeHtml(user.avatarColor) + "\"" : "";
   }
   // Titre à l'honneur pour cette personne — le mieux noté par elle en
   // priorité (le plus révélateur), sinon son dernier titre ajouté en
@@ -508,7 +498,7 @@ function boot(INITIAL_STATE) {
     var lastError = null;
     for (var i = 0; i < META_PROXIES.length; i++) {
       try {
-        var res = await fetch(META_PROXIES[i](url), {
+        var res = await fetchT(META_PROXIES[i](url), {
           signal: AbortSignal.timeout ? AbortSignal.timeout(9000) : undefined
         });
         if (!res.ok) throw new Error("proxy responded with " + res.status);
@@ -560,7 +550,7 @@ function boot(INITIAL_STATE) {
 
   async function searchITunesMovies(term, signal) {
     var url = "https://itunes.apple.com/search?country=FR&lang=fr_fr&limit=6&media=movie&entity=movie&term=" + encodeURIComponent(term);
-    var res = await fetch(url, { signal: signal });
+    var res = await fetchT(url, { signal: signal });
     if (!res.ok) throw new Error("itunes movie " + res.status);
     var data = await res.json();
     return (data.results || []).map(function (r) {
@@ -577,7 +567,7 @@ function boot(INITIAL_STATE) {
 
   async function searchITunesTV(term, signal) {
     var url = "https://itunes.apple.com/search?country=FR&lang=fr_fr&limit=6&media=tvShow&entity=tvSeason&term=" + encodeURIComponent(term);
-    var res = await fetch(url, { signal: signal });
+    var res = await fetchT(url, { signal: signal });
     if (!res.ok) throw new Error("itunes tv " + res.status);
     var data = await res.json();
     var seenCollections = {};
@@ -598,7 +588,7 @@ function boot(INITIAL_STATE) {
   }
 
   async function searchTVMaze(term, signal) {
-    var res = await fetch("https://api.tvmaze.com/search/shows?q=" + encodeURIComponent(term), { signal: signal });
+    var res = await fetchT("https://api.tvmaze.com/search/shows?q=" + encodeURIComponent(term), { signal: signal });
     if (!res.ok) throw new Error("tvmaze " + res.status);
     var data = await res.json();
     return (data || []).map(function (entry) {
@@ -650,7 +640,7 @@ function boot(INITIAL_STATE) {
     if (!TMDB_API_KEY) return [];
     var url = "https://api.themoviedb.org/3/search/multi?api_key=" + TMDB_API_KEY +
       "&query=" + encodeURIComponent(term) + "&language=fr-FR&include_adult=false";
-    var res = await fetch(url, { signal: signal });
+    var res = await fetchT(url, { signal: signal });
     if (!res.ok) throw new Error("tmdb " + res.status);
     var data = await res.json();
     return (data.results || []).map(function (r) { return mapTmdbItem(r); }).filter(Boolean);
@@ -697,7 +687,7 @@ function boot(INITIAL_STATE) {
       ];
       var mediaTypes = [null, "movie", "tv"]; // trending items carry their own media_type
       var responses = await Promise.all(urls.map(function (u) {
-        return fetch(u).then(function (res) { return res.ok ? res.json() : { results: [] }; }).catch(function () { return { results: [] }; });
+        return fetchT(u).then(function (res) { return res.ok ? res.json() : { results: [] }; }).catch(function () { return { results: [] }; });
       }));
       var seen = {};
       var combined = [];
@@ -726,7 +716,7 @@ function boot(INITIAL_STATE) {
       var base = "&api_key=" + TMDB_API_KEY + "&language=fr-FR&watch_region=FR&with_watch_monetization_types=flatrate&sort_by=popularity.desc&with_watch_providers=" + providerId;
       var kinds = ["movie", "tv"];
       var responses = await Promise.all(kinds.map(function (k) {
-        return fetch("https://api.themoviedb.org/3/discover/" + k + "?page=1" + base)
+        return fetchT("https://api.themoviedb.org/3/discover/" + k + "?page=1" + base)
           .then(function (res) { return res.ok ? res.json() : { results: [] }; }).catch(function () { return { results: [] }; });
       }));
       var lists = responses.map(function (d, i) {
@@ -756,7 +746,7 @@ function boot(INITIAL_STATE) {
   async function fetchWatchProviders(mediaType, id) {
     if (!TMDB_API_KEY || !mediaType || !id) return null;
     try {
-      var res = await fetch("https://api.themoviedb.org/3/" + mediaType + "/" + id + "/watch/providers?api_key=" + TMDB_API_KEY);
+      var res = await fetchT("https://api.themoviedb.org/3/" + mediaType + "/" + id + "/watch/providers?api_key=" + TMDB_API_KEY);
       if (!res.ok) return null;
       var data = await res.json();
       var fr = data.results && data.results.FR;
@@ -799,7 +789,7 @@ function boot(INITIAL_STATE) {
   async function fetchTrailer(mediaType, id) {
     if (!TMDB_API_KEY || !mediaType || !id) return null;
     try {
-      var res = await fetch("https://api.themoviedb.org/3/" + mediaType + "/" + id +
+      var res = await fetchT("https://api.themoviedb.org/3/" + mediaType + "/" + id +
         "/videos?api_key=" + TMDB_API_KEY + "&language=fr-FR&include_video_language=fr,en,null");
       if (!res.ok) return null;
       var data = await res.json();
@@ -825,7 +815,7 @@ function boot(INITIAL_STATE) {
     if (!TMDB_API_KEY || !mediaType || !id) return null;
     try {
       var endpoint = mediaType === "tv" ? "content_ratings" : "release_dates";
-      var res = await fetch("https://api.themoviedb.org/3/" + mediaType + "/" + id + "/" + endpoint + "?api_key=" + TMDB_API_KEY);
+      var res = await fetchT("https://api.themoviedb.org/3/" + mediaType + "/" + id + "/" + endpoint + "?api_key=" + TMDB_API_KEY);
       if (!res.ok) return null;
       var data = await res.json();
       var fr = (data.results || []).find(function (r) { return r.iso_3166_1 === "FR"; });
@@ -852,7 +842,7 @@ function boot(INITIAL_STATE) {
   async function fetchGenres(mediaType, id) {
     if (!TMDB_API_KEY || !mediaType || !id) return null;
     try {
-      var res = await fetch("https://api.themoviedb.org/3/" + mediaType + "/" + id + "?api_key=" + TMDB_API_KEY + "&language=fr-FR");
+      var res = await fetchT("https://api.themoviedb.org/3/" + mediaType + "/" + id + "?api_key=" + TMDB_API_KEY + "&language=fr-FR");
       if (!res.ok) return null;
       var data = await res.json();
       var names = (data.genres || []).map(function (g) { return g.name; }).filter(Boolean);
@@ -870,7 +860,7 @@ function boot(INITIAL_STATE) {
   async function fetchCast(mediaType, id) {
     if (!TMDB_API_KEY || !mediaType || !id) return null;
     try {
-      var res = await fetch("https://api.themoviedb.org/3/" + mediaType + "/" + id + "/credits?api_key=" + TMDB_API_KEY + "&language=fr-FR");
+      var res = await fetchT("https://api.themoviedb.org/3/" + mediaType + "/" + id + "/credits?api_key=" + TMDB_API_KEY + "&language=fr-FR");
       if (!res.ok) return null;
       var data = await res.json();
       var cast = (data.cast || []).slice(0, 12).map(function (c) {
@@ -883,7 +873,7 @@ function boot(INITIAL_STATE) {
   }
 
   async function searchJikanAnime(term, signal) {
-    var res = await fetch("https://api.jikan.moe/v4/anime?q=" + encodeURIComponent(term) + "&limit=6", { signal: signal });
+    var res = await fetchT("https://api.jikan.moe/v4/anime?q=" + encodeURIComponent(term) + "&limit=6", { signal: signal });
     if (!res.ok) throw new Error("jikan " + res.status);
     var data = await res.json();
     return (data.data || []).map(function (a) {
@@ -903,7 +893,7 @@ function boot(INITIAL_STATE) {
   async function searchWikidata(term, signal) {
     var url = "https://www.wikidata.org/w/api.php?action=wbsearchentities&search=" + encodeURIComponent(term) +
       "&language=fr&uselang=fr&format=json&type=item&limit=8&origin=*";
-    var res = await fetch(url, { signal: signal });
+    var res = await fetchT(url, { signal: signal });
     if (!res.ok) throw new Error("wikidata " + res.status);
     var data = await res.json();
     var out = [];
@@ -993,6 +983,54 @@ function boot(INITIAL_STATE) {
   }
 
   function clone(obj) { return JSON.parse(JSON.stringify(obj)); }
+
+  // Fenêtre de confirmation aux couleurs de l'appli (remplace la boîte du
+  // navigateur, peu soignée sur iPhone). Promise<boolean> ; le bouton
+  // d'action reprend le premier mot de la question (Supprimer, Exclure…).
+  function askConfirm(message) {
+    return new Promise(function (resolve) {
+      var first = String(message).split(/[\s«]+/)[0];
+      var label = { "Supprimer": "Supprimer", "Exclure": "Exclure", "Quitter": "Quitter", "Vider": "Vider", "Te": "Me déconnecter" }[first] || "Confirmer";
+      var ov = document.createElement("div");
+      ov.className = "dlg-ov";
+      ov.innerHTML = "<div class=\"dlg\" role=\"alertdialog\" aria-modal=\"true\" aria-label=\"Confirmation\">" +
+        "<p class=\"dlg-msg\">" + escapeHtml(message) + "</p>" +
+        "<div class=\"dlg-actions\"><button type=\"button\" class=\"btn\" data-dlg=\"no\">Annuler</button>" +
+        "<button type=\"button\" class=\"btn btn--danger dlg-ok\" data-dlg=\"yes\">" + escapeHtml(label) + "</button></div></div>";
+      function done(v) {
+        document.removeEventListener("keydown", onKey, true);
+        ov.remove();
+        resolve(v);
+      }
+      function onKey(e) { if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); done(false); } }
+      ov.addEventListener("click", function (e) {
+        if (e.target === ov) { done(false); return; }
+        var b = e.target.closest("[data-dlg]");
+        if (b) done(b.getAttribute("data-dlg") === "yes");
+      });
+      document.addEventListener("keydown", onKey, true);
+      document.body.appendChild(ov);
+      var cancel = ov.querySelector("[data-dlg=no]");
+      if (cancel) cancel.focus();
+    });
+  }
+
+  // fetch avec délai maximum : sur une mauvaise connexion un appel qui ne
+  // répond jamais laissait l'écran sur « Chargement… » indéfiniment. Passé
+  // le délai la requête est annulée (comme une panne réseau : les appelants
+  // gèrent déjà ce cas). Respecte aussi un signal d'annulation fourni.
+  function fetchT(url, opts, ms) {
+    opts = opts || {};
+    if (typeof AbortController === "undefined") return fetch(url, opts);
+    var ctl = new AbortController();
+    var timer = setTimeout(function () { ctl.abort(); }, ms || 8000);
+    var outer = opts.signal;
+    if (outer) {
+      if (outer.aborted) ctl.abort();
+      else outer.addEventListener("abort", function () { ctl.abort(); });
+    }
+    return fetch(url, Object.assign({}, opts, { signal: ctl.signal })).finally(function () { clearTimeout(timer); });
+  }
 
   /* ---------- apparence (clair / sombre / système) ----------
      Préférence purement locale à cet appareil — n'a rien à voir avec
@@ -1652,7 +1690,7 @@ function boot(INITIAL_STATE) {
     try {
       var id = sp.id && /^\d+$/.test(sp.id) && sp.id !== "0" ? sp.id : null;
       if (!id && sp.titre && TMDB_API_KEY) {
-        var rs = await fetch("https://api.themoviedb.org/3/search/multi?api_key=" + TMDB_API_KEY +
+        var rs = await fetchT("https://api.themoviedb.org/3/search/multi?api_key=" + TMDB_API_KEY +
           "&language=fr-FR&include_adult=false&query=" + encodeURIComponent(sp.titre));
         var sd = await rs.json();
         var list = (sd.results || []).filter(function (x) { return x.media_type === "movie" || x.media_type === "tv"; });
@@ -1663,7 +1701,7 @@ function boot(INITIAL_STATE) {
         if (hit) { id = hit.id; out.type = hit.media_type; }
       }
       if (id && TMDB_API_KEY) {
-        var rd = await fetch("https://api.themoviedb.org/3/" + out.type + "/" + id + "?api_key=" + TMDB_API_KEY + "&language=fr-FR");
+        var rd = await fetchT("https://api.themoviedb.org/3/" + out.type + "/" + id + "?api_key=" + TMDB_API_KEY + "&language=fr-FR");
         if (rd.ok) {
           var d = await rd.json();
           out.title = d.title || d.name || out.title;
@@ -1802,6 +1840,8 @@ function boot(INITIAL_STATE) {
   var persistTimer = null;
   var pendingNeedsRender = false; // faux tant que la salve ne contient que des écritures silencieuses (lecture des notifs)
 
+  var persistFailures = 0;
+  var PERSIST_MAX_RETRIES = 4; // 3 s, 6 s, 12 s, 24 s
   async function persist(mutateFn, opts) {
     if (readOnly) return;
     if (!session || !session.spaceId) return;
@@ -1828,13 +1868,31 @@ function boot(INITIAL_STATE) {
       var next = sbRowsFromState(state);
       await sbSaveDiff(sbBaseRows || sbRowsFromState({ items: [] }), next);
       sbBaseRows = next;
+      persistFailures = 0;
+      if (syncNote === "Connexion instable — nouvelle tentative…") needsRender = true;
       syncNote = "";
       if (needsRender) render(); else updateNotifPanelAndBadge();
     } catch (err) {
       console.error("persist() a échoué :", err);
-      state = lastGoodSnapshot;
-      syncNote = "La synchro a échoué, réessaie.";
-      render();
+      persistFailures++;
+      if (persistFailures <= PERSIST_MAX_RETRIES) {
+        // Réseau capricieux : on garde les actions faites (elles restent à l'écran) et on
+        // retente, de plus en plus tard. Le diff est recalculé à chaque essai, donc rien
+        // n'est perdu — y compris ce qui a été fait pendant l'envoi qui vient d'échouer.
+        pendingMutations = mutations.concat(pendingMutations);
+        pendingNeedsRender = pendingNeedsRender || needsRender;
+        syncNote = "Connexion instable — nouvelle tentative…";
+        render();
+        persistTimer = setTimeout(flushPersist, 3000 * Math.pow(2, persistFailures - 1));
+      } else {
+        // Toujours rien : refus du serveur ou hors ligne durable. On revient à la dernière
+        // version enregistrée pour ne pas montrer des changements qui n'existent pas ailleurs.
+        persistFailures = 0;
+        pendingMutations = [];
+        state = lastGoodSnapshot;
+        syncNote = "La synchro a échoué, réessaie.";
+        render();
+      }
     } finally {
       sbFlushing = false;
       if (refreshDeferred && !persistTimer && !pendingMutations.length) { refreshDeferred = false; refreshSpaceFromServer(); }
@@ -2336,7 +2394,7 @@ function boot(INITIAL_STATE) {
 
   async function sbLegacyCall(body) {
     try {
-      var res = await fetch(dbConfig.url + "/functions/v1/legacy-login", {
+      var res = await fetchT(dbConfig.url + "/functions/v1/legacy-login", {
         method: "POST",
         headers: { "Content-Type": "application/json", "apikey": dbConfig.anonKey, "Authorization": "Bearer " + dbConfig.anonKey },
         body: JSON.stringify(body)
@@ -2567,7 +2625,7 @@ function boot(INITIAL_STATE) {
       try {
         var mt = reco.type === "tv" ? "tv" : "movie", item = null;
         if (reco.id && /^\d+$/.test(reco.id) && reco.id !== "0" && TMDB_API_KEY) {
-          var rd = await fetch("https://api.themoviedb.org/3/" + mt + "/" + reco.id + "?api_key=" + TMDB_API_KEY + "&language=fr-FR");
+          var rd = await fetchT("https://api.themoviedb.org/3/" + mt + "/" + reco.id + "?api_key=" + TMDB_API_KEY + "&language=fr-FR");
           if (rd.ok) {
             var d = await rd.json();
             d.genre_ids = (d.genres || []).map(function (g) { return g.id; });
@@ -2721,8 +2779,6 @@ function boot(INITIAL_STATE) {
     if (liveTimer) clearTimeout(liveTimer);
     liveTimer = setTimeout(function () { liveTimer = null; refreshSpaceFromServer(); }, 350);
   }
-  // Plus besoin de prévenir le binôme à la main : la base s'en charge.
-  function notifyAblyChannel() {}
 
   // Relit l'espace et ne touche à l'écran que si le binôme a réellement bougé quelque chose.
   // Les changements de l'onglet "à trier"/"matchs" redessinent l'écran ; ailleurs seuls les matchs ouvrent leur fenêtre.
@@ -2783,7 +2839,7 @@ function boot(INITIAL_STATE) {
     ];
     var knownMediaTypes = [null, "movie", "tv", "movie"]; // trending items carry their own media_type
     Promise.all(urls.map(function (u) {
-      return fetch(u).then(function (res) { return res.ok ? res.json() : { results: [] }; }).catch(function () { return { results: [] }; });
+      return fetchT(u).then(function (res) { return res.ok ? res.json() : { results: [] }; }).catch(function () { return { results: [] }; });
     })).then(function (responses) {
       var film = null, serie = null, doc = null;
       responses.forEach(function (data, i) {
@@ -2911,61 +2967,7 @@ function boot(INITIAL_STATE) {
     );
   }
 
-  // Petit résumé chiffré de l'espace, affiché dans la carte profil — ne
-  // sert qu'à remplir/valoriser cette carte avec de la vraie donnée (pas
-  // de tableau de bord séparé, juste 2-3 chiffres comme sur Bibliothèque).
-  function renderAccountStats() {
-    var all = state.items || [];
-    if (!all.length) return "";
-    var watchedCount = all.filter(function (i) { return itemStatus(i) === "watched"; }).length;
-    var pendingCount = all.filter(function (i) { return itemStatus(i) === "pending"; }).length;
-    return "<div class=\"account-stats-row\">" +
-      "<div class=\"account-stat\"><strong>" + all.length + "</strong><span>titre" + (all.length > 1 ? "s" : "") + "</span></div>" +
-      "<div class=\"account-stat\"><strong>" + watchedCount + "</strong><span>vu" + (watchedCount > 1 ? "s" : "") + " ensemble</span></div>" +
-      "<div class=\"account-stat\"><strong>" + pendingCount + "</strong><span>à trier</span></div>" +
-    "</div>";
-  }
 
-  function renderAccountModal() {
-    var initial = (myName || "?").trim().charAt(0).toUpperCase();
-    var myUser = indexCache && session ? indexCache.users[session.email] : null;
-    return (
-      "<div class=\"account-modal-card\">" +
-        "<div class=\"account-unified-card\">" +
-          "<button type=\"button\" class=\"account-modal-close\" aria-label=\"Fermer\">&times;</button>" +
-          "<div class=\"account-header\">" +
-            "<div class=\"account-avatar account-header-avatar\"" + avatarStyle(myUser) + " aria-hidden=\"true\">" + escapeHtml(initial) + "</div>" +
-            "<div class=\"account-header-text\">" +
-              "<h3 class=\"screen-title account-header-name\">" + escapeHtml(myName) + "</h3>" +
-              "<p class=\"account-email\">" + escapeHtml(session ? session.email : "") + "</p>" +
-            "</div>" +
-          "</div>" +
-          "<div class=\"account-links-row\">" +
-          "<button type=\"button\" class=\"account-tile\" id=\"open-profil-btn\"" + tileColorStyle(myUser) + ">" +
-            "<span class=\"tile-icon-badge\"><svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\">" +
-              "<path d=\"M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2\"></path><circle cx=\"12\" cy=\"7\" r=\"4\"></circle></svg></span>" +
-            "<span class=\"account-tile-label\">Profil</span>" +
-          "</button>" +
-          "<button type=\"button\" class=\"account-tile\" id=\"open-settings-btn\"" + tileColorStyle(myUser) + ">" +
-            "<span class=\"tile-icon-badge\"><svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\">" +
-              "<circle cx=\"12\" cy=\"12\" r=\"3\"></circle>" +
-              "<path d=\"M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z\"></path></svg></span>" +
-          "<span class=\"account-tile-label\">Réglages</span>" +
-        "</button>" +
-        "</div>" +
-        renderAccountStats() +
-        "</div>" +
-        "<div class=\"account-modal-divider\"></div>" +
-        "<div id=\"invite-section\">" + renderInviteSection() + "</div>" +
-        "<button type=\"button\" class=\"account-logout-link\" id=\"logout-btn\">Se déconnecter</button>" +
-        "<div class=\"debug-zone\">" +
-          "<p class=\"debug-zone-label\">Zone de test (temporaire)</p>" +
-          "<button type=\"button\" class=\"btn-debug\" id=\"clear-cache-btn\">Vider le cache local</button>" +
-          "<button type=\"button\" class=\"btn-debug btn-debug--danger\" id=\"clear-movies-btn\">Vider les films de l'espace</button>" +
-        "</div>" +
-      "</div>"
-    );
-  }
 
   // Le bouton du prénom (en haut à droite) ouvre désormais la page
   // "Espace membre" plutôt qu'une modale — voir renderProfil. L'ancienne
@@ -2996,153 +2998,12 @@ function boot(INITIAL_STATE) {
       openSpaceModal();
     });
   }
-  function bindAccountModal() {
-    var modal = document.getElementById("account-modal");
-    var closeBtn = modal.querySelector(".account-modal-close");
-    if (closeBtn) closeBtn.addEventListener("click", closeAccountModal);
-    modal.addEventListener("click", function (e) {
-      if (e.target === modal) closeAccountModal();
-    });
-    bindInviteSection();
-    var profilBtn = document.getElementById("open-profil-btn");
-    if (profilBtn) profilBtn.addEventListener("click", function () {
-      closeAccountModal();
-      activeTab = "profil";
-      render();
-    });
-    var settingsBtn = document.getElementById("open-settings-btn");
-    if (settingsBtn) settingsBtn.addEventListener("click", function () {
-      closeAccountModal();
-      openSettingsModal();
-    });
-    var logoutBtn = document.getElementById("logout-btn");
-    if (logoutBtn) logoutBtn.addEventListener("click", function () {
-      if (!confirm("Te déconnecter de ce compte sur cet appareil ?")) return;
-      closeAccountModal();
-      clearSession();
-      authIntroPlayed = false;
-      disconnectAblyChannel();
-      spaceLoaded = false;
-      state = { items: [] };
-      render();
-    });
-    // --- Boutons temporaires de test, à retirer avant la mise en public ---
-    var clearCacheBtn = document.getElementById("clear-cache-btn");
-    if (clearCacheBtn) clearCacheBtn.addEventListener("click", function () {
-      if (!confirm("Vider le cache local (déconnexion + réglages de ce navigateur) et recharger la page ?")) return;
-      Object.keys(localStorage).forEach(function (k) {
-        if (k.indexOf("dp-") === 0) localStorage.removeItem(k);
-      });
-      location.reload();
-    });
-    var clearMoviesBtn = document.getElementById("clear-movies-btn");
-    if (clearMoviesBtn) clearMoviesBtn.addEventListener("click", async function () {
-      if (!session) return;
-      if (!confirm("Supprimer TOUS les films/séries de cet espace, pour toi ET ton binôme ? C'est irréversible.")) return;
-      clearMoviesBtn.disabled = true;
-      clearMoviesBtn.textContent = "Suppression…";
-      try {
-        await sbWipeSpace();
-        state = { items: [] };
-        closeAccountModal();
-        render();
-      } catch (err) {
-        clearMoviesBtn.disabled = false;
-        clearMoviesBtn.textContent = "Vider les films de l'espace";
-        alert("Impossible de vider les films pour le moment, réessaie.");
-      }
-    });
-  }
 
-  /* ---------- modale "Réglages du compte" ---------- */
-  function renderSettingsModal() {
-    var themeOptions = [["system", "Système"], ["light", "Clair"], ["dark", "Sombre"]];
-    return (
-      "<div class=\"account-modal-card\">" +
-        "<button type=\"button\" class=\"account-modal-close\" aria-label=\"Fermer\">&times;</button>" +
-        "<h3 class=\"screen-title settings-modal-title\">Réglages du compte</h3>" +
-        "<div class=\"account-modal-divider settings-divider-tight\"></div>" +
 
-        "<p class=\"invite-label\">Apparence</p>" +
-        "<div class=\"pill-choice\" id=\"theme-choice\">" +
-          themeOptions.map(function (opt) {
-            return "<button type=\"button\" class=\"pill-btn" + (themePref === opt[0] ? " pill-btn--active" : "") + "\" data-theme-pref=\"" + opt[0] + "\">" + opt[1] + "</button>";
-          }).join("") +
-        "</div>" +
-        "<div class=\"account-modal-divider\"></div>" +
-
-        "<p class=\"invite-label\">Mot de passe</p>" +
-        "<div id=\"password-feedback\"></div>" +
-        "<form id=\"password-form\" class=\"onboard-form onboard-form--stacked settings-form\">" +
-          "<label class=\"field\"><span>Mot de passe actuel</span><input type=\"password\" id=\"pw-current\" autocomplete=\"current-password\" required /></label>" +
-          "<label class=\"field\"><span>Nouveau mot de passe</span><input type=\"password\" id=\"pw-new\" autocomplete=\"new-password\" minlength=\"6\" required /></label>" +
-          "<label class=\"field\"><span>Confirmer le nouveau mot de passe</span><input type=\"password\" id=\"pw-confirm\" autocomplete=\"new-password\" minlength=\"6\" required /></label>" +
-          "<button type=\"submit\" class=\"btn btn--primary\" id=\"pw-submit\">Modifier le mot de passe</button>" +
-        "</form>" +
-        "<div class=\"account-modal-divider\"></div>" +
-        "<button type=\"button\" class=\"account-settings-link\" id=\"open-space-btn\">Gérer l'espace partagé <span class=\"link-arrow\">→</span></button>" +
-      "</div>"
-    );
-  }
-
-  function openSettingsModal() {
-    settingsModalOpen = true;
-    var modal = document.getElementById("settings-modal");
-    modal.innerHTML = renderSettingsModal();
-    modal.hidden = false;
-    bindSettingsModal();
-  }
   function closeSettingsModal() {
-    settingsModalOpen = false;
     var modal = document.getElementById("settings-modal");
     modal.hidden = true;
     modal.innerHTML = "";
-  }
-  function bindSettingsModal() {
-    var modal = document.getElementById("settings-modal");
-    var closeBtn = modal.querySelector(".account-modal-close");
-    if (closeBtn) closeBtn.addEventListener("click", closeSettingsModal);
-
-    document.querySelectorAll("[data-theme-pref]").forEach(function (btn) {
-      btn.addEventListener("click", function () {
-        saveThemePref(btn.getAttribute("data-theme-pref"));
-        document.querySelectorAll("[data-theme-pref]").forEach(function (b) {
-          b.classList.toggle("pill-btn--active", b === btn);
-        });
-      });
-    });
-
-    var pwForm = document.getElementById("password-form");
-    if (pwForm) pwForm.addEventListener("submit", async function (e) {
-      e.preventDefault();
-      var current = document.getElementById("pw-current").value;
-      var next = document.getElementById("pw-new").value;
-      var confirmVal = document.getElementById("pw-confirm").value;
-      var feedback = document.getElementById("password-feedback");
-      var submitBtn = document.getElementById("pw-submit");
-      feedback.innerHTML = "";
-      if (next !== confirmVal) {
-        feedback.innerHTML = "<p class=\"auth-error\">Les deux mots de passe ne correspondent pas.</p>";
-        return;
-      }
-      submitBtn.disabled = true;
-      submitBtn.textContent = "…";
-      try {
-        await changePassword(current, next);
-        pwForm.reset();
-        feedback.innerHTML = "<p class=\"password-success\">Mot de passe modifié.</p>";
-      } catch (err) {
-        feedback.innerHTML = "<p class=\"auth-error\">" + escapeHtml((err && err.message) || "Une erreur est survenue, réessaie.") + "</p>";
-      }
-      submitBtn.disabled = false;
-      submitBtn.textContent = "Modifier le mot de passe";
-    });
-
-    var openSpaceBtn = document.getElementById("open-space-btn");
-    if (openSpaceBtn) openSpaceBtn.addEventListener("click", function () {
-      closeSettingsModal();
-      openSpaceModal();
-    });
   }
 
   // Modale dédiée à l'espace partagé — extraite des réglages (voir
@@ -3200,7 +3061,7 @@ function boot(INITIAL_STATE) {
 
     var leaveBtn = document.getElementById("leave-space-btn");
     if (leaveBtn) leaveBtn.addEventListener("click", async function () {
-      if (!confirm("Quitter cet espace partagé ? Tu repartiras sur un espace vide, et ton binôme garde l'espace actuel avec ses films.")) return;
+      if (!(await askConfirm("Quitter cet espace partagé ? Tu repartiras sur un espace vide, et ton binôme garde l'espace actuel avec ses films."))) return;
       leaveBtn.disabled = true;
       leaveBtn.textContent = "…";
       try {
@@ -3215,7 +3076,7 @@ function boot(INITIAL_STATE) {
     var excludeBtn = document.getElementById("exclude-partner-btn");
     if (excludeBtn) excludeBtn.addEventListener("click", async function () {
       var name = partnerName() || "cette personne";
-      if (!confirm("Exclure " + name + " de cet espace ? Tu gardes l'espace et ses films ; " + name + " repart sur un espace vide. Si " + name + " est en ligne à cet instant, sa session sera coupée tout de suite — sinon ça prendra effet à sa prochaine connexion.")) return;
+      if (!(await askConfirm("Exclure " + name + " de cet espace ? Tu gardes l'espace et ses films ; " + name + " repart sur un espace vide. Si " + name + " est en ligne à cet instant, sa session sera coupée tout de suite — sinon ça prendra effet à sa prochaine connexion."))) return;
       var originalText = excludeBtn.textContent;
       excludeBtn.disabled = true;
       excludeBtn.textContent = "…";
@@ -3262,21 +3123,6 @@ function boot(INITIAL_STATE) {
     movie: ["film", "films"], series: ["série", "séries"],
     doc: ["documentaire", "documentaires"], other: ["autre", "autres"]
   };
-  function renderStatsRow(stats) {
-    var breakdown = ITEM_TYPES.filter(function (t) { return stats.typeBreakdown[t]; }).map(function (t) {
-      var n = stats.typeBreakdown[t];
-      return n + " " + TYPE_LABEL_COUNT[t][n > 1 ? 1 : 0];
-    });
-    return "<div class=\"bib-stats profil-stats\">" +
-      "<span class=\"bib-stat\"><strong>" + stats.count + "</strong> titre" + (stats.count > 1 ? "s" : "") + " ajouté" + (stats.count > 1 ? "s" : "") + "</span>" +
-      (stats.avgRating !== null ? "<span class=\"bib-stat\">Note moyenne : <strong>" + stats.avgRating.toFixed(1) + "★</strong></span>" : "") +
-      (stats.successRate !== null ? "<span class=\"bib-stat\"><strong>" + stats.successRate + "%</strong> de matchs</span>" : "") +
-      (stats.topGenre ? "<span class=\"bib-stat\">Genre préféré : <strong>" + escapeHtml(stats.topGenre) + "</strong></span>" : "") +
-      // Seulement si plus d'un type — sinon ça ne fait que répéter le
-      // total juste au-dessus ("3 titres ajoutés" / "3 films").
-      (breakdown.length > 1 ? "<span class=\"bib-stat\">" + escapeHtml(breakdown.join(" · ")) + "</span>" : "") +
-    "</div>";
-  }
   var FEATURED_LABEL = { added: "Dernier ajouté", rated: "Dernière note", watched: "Vu récemment" };
   function renderFeaturedTitle(name) {
     var featured = featuredTitle(name);
@@ -3554,7 +3400,7 @@ function boot(INITIAL_STATE) {
     });
     var leaveBtn = document.getElementById("leave-space-btn");
     if (leaveBtn) leaveBtn.addEventListener("click", async function () {
-      if (!confirm("Quitter cet espace partagé ? Tu repartiras sur un espace vide, et ton binôme garde l'espace actuel avec ses films.")) return;
+      if (!(await askConfirm("Quitter cet espace partagé ? Tu repartiras sur un espace vide, et ton binôme garde l'espace actuel avec ses films."))) return;
       leaveBtn.disabled = true;
       try {
         await leaveSharedSpace();
@@ -3566,7 +3412,7 @@ function boot(INITIAL_STATE) {
     var excludeBtn = document.getElementById("exclude-partner-btn");
     if (excludeBtn) excludeBtn.addEventListener("click", async function () {
       var name = partnerName() || "cette personne";
-      if (!confirm("Exclure " + name + " de cet espace ? Tu gardes l'espace et ses films ; " + name + " repart sur un espace vide. Si " + name + " est en ligne à cet instant, sa session sera coupée tout de suite — sinon ça prendra effet à sa prochaine connexion.")) return;
+      if (!(await askConfirm("Exclure " + name + " de cet espace ? Tu gardes l'espace et ses films ; " + name + " repart sur un espace vide. Si " + name + " est en ligne à cet instant, sa session sera coupée tout de suite — sinon ça prendra effet à sa prochaine connexion."))) return;
       excludeBtn.disabled = true;
       try {
         await excludePartner();
@@ -3577,8 +3423,8 @@ function boot(INITIAL_STATE) {
       }
     });
     var logoutBtn = document.getElementById("logout-btn");
-    if (logoutBtn) logoutBtn.addEventListener("click", function () {
-      if (!confirm("Te déconnecter de ce compte sur cet appareil ?")) return;
+    if (logoutBtn) logoutBtn.addEventListener("click", async function () {
+      if (!(await askConfirm("Te déconnecter de ce compte sur cet appareil ?"))) return;
       clearSession();
       authIntroPlayed = false;
       disconnectAblyChannel();
@@ -3588,8 +3434,8 @@ function boot(INITIAL_STATE) {
     });
     // --- Boutons temporaires de test, à retirer avant la mise en public ---
     var clearCacheBtn = document.getElementById("clear-cache-btn");
-    if (clearCacheBtn) clearCacheBtn.addEventListener("click", function () {
-      if (!confirm("Vider le cache local (déconnexion + réglages de ce navigateur) et recharger la page ?")) return;
+    if (clearCacheBtn) clearCacheBtn.addEventListener("click", async function () {
+      if (!(await askConfirm("Vider le cache local (déconnexion + réglages de ce navigateur) et recharger la page ?"))) return;
       Object.keys(localStorage).forEach(function (k) {
         if (k.indexOf("dp-") === 0) localStorage.removeItem(k);
       });
@@ -3598,7 +3444,7 @@ function boot(INITIAL_STATE) {
     var clearMoviesBtn = document.getElementById("clear-movies-btn");
     if (clearMoviesBtn) clearMoviesBtn.addEventListener("click", async function () {
       if (!session) return;
-      if (!confirm("Supprimer TOUS les films/séries de cet espace, pour toi ET ton binôme ? C'est irréversible.")) return;
+      if (!(await askConfirm("Supprimer TOUS les films/séries de cet espace, pour toi ET ton binôme ? C'est irréversible."))) return;
       clearMoviesBtn.disabled = true;
       clearMoviesBtn.textContent = "Suppression…";
       try {
@@ -3983,62 +3829,10 @@ function boot(INITIAL_STATE) {
   function availBadgeHtml(kind) {
     return kind ? "<span class=\"avail avail--" + kind + "\" title=\"Disponibilité en France (TMDB / JustWatch)\">" + AVAIL_LABEL[kind] + "</span>" : "";
   }
-  // Variante "au niveau des plateformes" : logos des plateformes sur l'affiche,
-  // chacun avec sa pastille de statut (vert inclus / bleu gratuit / orange payant).
-  function availStripHtml(wp, hasTmdb, max) {
-    var seen = {}, rank = { inc: 0, free: 1, pay: 2 }, list = [];
-    [["inc", wp && wp.flatrate], ["free", wp && wp.free], ["pay", wp && wp.rentBuy]].forEach(function (r) {
-      (r[1] || []).forEach(function (p) {
-        if (seen[p.name]) return;
-        seen[p.name] = true;
-        list.push({ p: p, k: r[0] });
-      });
-    });
-    if (!list.length) return availBadgeHtml(hasTmdb ? "no" : null);
-    list.sort(function (a, b) { return rank[a.k] - rank[b.k]; });
-    var shown = list.slice(0, max || 3);
-    var html = shown.map(function (e) {
-      return "<span class=\"avl\" title=\"" + escapeHtml(e.p.name) + " · " + AVAIL_LABEL[e.k] + "\">" +
-        (e.p.logo ? "<img src=\"" + escapeHtml(e.p.logo) + "\" alt=\"\" />" : "<b>" + escapeHtml(e.p.name.charAt(0)) + "</b>") +
-        "<i class=\"avd avd--" + e.k + "\"></i></span>";
-    }).join("");
-    if (list.length > shown.length) html += "<span class=\"avm\">+" + (list.length - shown.length) + "</span>";
-    return "<span class=\"avs\">" + html + "</span>";
-  }
   var availCache = {}; // "movie:123" -> kind, pour les suggestions (un appel par titre, une seule fois)
 
-  function providerRow(label, list) {
-    var chips = list.map(function (p) {
-      return "<span class=\"provider-chip\">" +
-        (p.logo ? "<img src=\"" + escapeHtml(p.logo) + "\" alt=\"\" />" : "") +
-        escapeHtml(p.name) + "</span>";
-    }).join("");
-    return "<p class=\"providers-label\">" + label + "</p><div class=\"provider-row\">" + chips + "</div>";
-  }
 
-  function linkedRow(wp, label, list) {
-    var row = providerRow(label, list);
-    return wp.link
-      ? "<a class=\"providers-link\" href=\"" + escapeHtml(wp.link) + "\" target=\"_blank\" rel=\"noreferrer\">" + row + "</a>"
-      : row;
-  }
 
-  // Shows the first 3 providers of a list right away; anything past that
-  // hides behind a "+ N de plus" toggle, kept open/closed per item+section
-  // in expandedProviders so it survives re-renders from other actions.
-  function providerSection(wp, itemId, key, label, list) {
-    if (!list || !list.length) return "";
-    var expandKey = itemId + ":" + key;
-    var isOpen = !!expandedProviders[expandKey];
-    var shown = isOpen ? list : list.slice(0, 1);
-    var html = linkedRow(wp, label, shown);
-    if (list.length > 1) {
-      html += "<button type=\"button\" class=\"providers-toggle\" data-toggle-providers=\"" + expandKey + "\">" +
-        (isOpen ? "Voir moins" : "+ " + (list.length - 1) + " de plus") +
-        "</button>";
-    }
-    return html;
-  }
 
   // Just the collapsed one-line "Où regarder (N)" toggle — "" once it's
   // been expanded (the full list takes over, via renderWatchProviders
@@ -4621,12 +4415,12 @@ function boot(INITIAL_STATE) {
 
   function bindBibliotheque() {
     document.querySelectorAll("[data-delete-id]").forEach(function (btn) {
-      btn.addEventListener("click", function (e) {
+      btn.addEventListener("click", async function (e) {
         e.stopPropagation();
         var id = btn.getAttribute("data-delete-id");
         var item = state.items.find(function (i) { return i.id === id; });
         var title = item ? item.title : "ce titre";
-        if (!window.confirm("Supprimer « " + title + " » ? Cette action est partagée avec ton binôme et ne peut pas être annulée.")) return;
+        if (!(await askConfirm("Supprimer « " + title + " » ? Cette action est partagée avec ton binôme et ne peut pas être annulée."))) return;
         deleteItem(id);
       });
     });
@@ -5353,12 +5147,12 @@ function boot(INITIAL_STATE) {
 
   function bindTrier() {
     document.querySelectorAll("#trier-track [data-delete-id]").forEach(function (btn) {
-      btn.addEventListener("click", function (e) {
+      btn.addEventListener("click", async function (e) {
         e.stopPropagation();
         var id = btn.getAttribute("data-delete-id");
         var item = state.items.find(function (i) { return i.id === id; });
         var title = item ? item.title : "ce titre";
-        if (!window.confirm("Supprimer « " + title + " » ? Cette action est partagée avec ton binôme et ne peut pas être annulée.")) return;
+        if (!(await askConfirm("Supprimer « " + title + " » ? Cette action est partagée avec ton binôme et ne peut pas être annulée."))) return;
         deleteItem(id);
       });
     });
@@ -8714,6 +8508,11 @@ function boot(INITIAL_STATE) {
 ".suggestions--framed{border:1px solid var(--border);border-radius:1.1rem;" +
   "background:var(--surface);padding:1.2rem 1.1rem 1.4rem;}" +
 ".suggestions-label{font-size:.82rem;color:var(--ink-dim);margin:0 0 1rem;}" +
+".dlg-ov{position:fixed;inset:0;z-index:300;background:rgba(5,6,10,.7);display:flex;align-items:center;justify-content:center;padding:1.25rem;}" +
+".dlg{background:var(--surface);border:1px solid var(--border);border-radius:1.2rem;padding:1.3rem 1.2rem 1.1rem;max-width:22rem;width:100%;box-shadow:0 20px 50px rgba(0,0,0,.5);}" +
+".dlg-msg{margin:0 0 1.1rem;font-size:.95rem;line-height:1.45;}" +
+".dlg-actions{display:flex;gap:.6rem;}.dlg-actions .btn{flex:1;}" +
+".dlg-ok{background:#d9534f;border-color:#d9534f;color:#fff;}" +
 ".sugg-platforms{display:flex;gap:.45rem;overflow-x:auto;margin:0 0 .9rem;padding-bottom:.1rem;scrollbar-width:none;-webkit-overflow-scrolling:touch;}" +
 ".sugg-platforms::-webkit-scrollbar{display:none;}" +
 ".sugg-pf{flex:none;display:inline-flex;align-items:center;gap:.4rem;border:1px solid var(--border);background:var(--surface);color:var(--ink);border-radius:999px;padding:.38rem .8rem .38rem .45rem;font:inherit;font-size:.78rem;cursor:pointer;white-space:nowrap;}" +
