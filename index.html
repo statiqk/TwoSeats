@@ -181,7 +181,21 @@ function boot(INITIAL_STATE) {
   function invalidateSuggestionsCache() {
     suggestionsCache = null;
     suggestionsFetchPromise = null;
+    suggestionsPlatformCache = {};
   }
+  // Filtre « par plateforme » des suggestions : "all" = le mélange habituel,
+  // sinon l'identifiant TMDB du service (France). Le choix vaut pour la
+  // session ; chaque plateforme est chargée une fois puis gardée en cache.
+  var SUGGESTION_PLATFORMS = [
+    { id: "all", name: "Tout", color: "#8b8b95" },
+    { id: "8", name: "Netflix", color: "#e50914" },
+    { id: "119", name: "Prime", color: "#00a8e1" },
+    { id: "337", name: "Disney+", color: "#113ccf" },
+    { id: "1899", name: "Max", color: "#5b2bd6" },
+    { id: "381", name: "Canal+", color: "#2a2a2a" }
+  ];
+  var suggestionsPlatform = "all";
+  var suggestionsPlatformCache = {};
   var readOnly = false;
   var syncNote = "";
   var artifactAPI = null;
@@ -675,6 +689,38 @@ function boot(INITIAL_STATE) {
         });
       });
       return combined.slice(0, 12);
+    } catch (e) {
+      return [];
+    }
+  }
+
+  // Populaires sur une plateforme en France (TMDB discover + watch providers).
+  // Films et séries entrelacés ; ce qui est déjà dans la liste est écarté.
+  async function fetchPlatformSuggestions(providerId) {
+    if (!TMDB_API_KEY) return [];
+    try {
+      var base = "&api_key=" + TMDB_API_KEY + "&language=fr-FR&watch_region=FR&with_watch_monetization_types=flatrate&sort_by=popularity.desc&with_watch_providers=" + providerId;
+      var kinds = ["movie", "tv"];
+      var responses = await Promise.all(kinds.map(function (k) {
+        return fetch("https://api.themoviedb.org/3/discover/" + k + "?page=1" + base)
+          .then(function (res) { return res.ok ? res.json() : { results: [] }; }).catch(function () { return { results: [] }; });
+      }));
+      var lists = responses.map(function (d, i) {
+        return (d.results || []).map(function (r) { return mapTmdbItem(r, kinds[i]); });
+      });
+      var seen = {}, out = [];
+      for (var n = 0; n < 20; n++) {
+        lists.forEach(function (l) {
+          var item = l[n];
+          if (!item || !item.posterUrl) return;
+          var key = item.mediaType + ":" + item.tmdbId;
+          if (seen[key]) return;
+          seen[key] = true;
+          if (alreadyInWatchlist(item)) return;
+          out.push(item);
+        });
+      }
+      return out.slice(0, 12);
     } catch (e) {
       return [];
     }
@@ -4660,6 +4706,12 @@ function boot(INITIAL_STATE) {
     var wrapClass = "suggestions" + (opts.framed ? " suggestions--framed" : "");
     return "<div class=\"" + wrapClass + "\" id=\"suggestions-wrap\" hidden>" +
       "<p class=\"" + labelClass + "\">Suggestions du moment</p>" +
+      "<div class=\"sugg-platforms\" id=\"sugg-platforms\" role=\"group\" aria-label=\"Plateforme\">" +
+        SUGGESTION_PLATFORMS.map(function (pl) {
+          return "<button type=\"button\" class=\"sugg-pf" + (suggestionsPlatform === pl.id ? " sugg-pf--on" : "") + "\" data-sugg-platform=\"" + pl.id + "\">" +
+            (pl.id === "all" ? "" : "<i style=\"background:" + pl.color + "\"></i>") + pl.name + "</button>";
+        }).join("") +
+      "</div>" +
       "<div class=\"suggestions-carousel\" id=\"suggestions-carousel\">" +
         "<div class=\"suggestions-row\" id=\"suggestions-row\"></div>" +
       "</div>" +
@@ -5764,7 +5816,13 @@ function boot(INITIAL_STATE) {
     if (!suggestionsWrap || !suggestionsRow) return;
 
     function populate(items) {
-      if (!items.length) return;
+      if (!items.length) {
+        if (suggestionsPlatform === "all") return;
+        suggestionsRow.classList.remove("row--centered");
+        suggestionsRow.innerHTML = "<p class=\"suggestions-empty\">Rien de populaire sur cette plateforme pour l'instant.</p>";
+        suggestionsWrap.hidden = false;
+        return;
+      }
       suggestionsRow.innerHTML = items.map(function (item, idx) {
         // Title sits on the poster itself now (bottom, over a gradient
         // scrim so it stays legible over any poster's own colors) rather
@@ -5839,14 +5897,39 @@ function boot(INITIAL_STATE) {
     // tabs and back) leave this block alone instead of blanking and
     // rebuilding it, and it's synchronous so there's no gap where the fresh
     // markup's "hidden" attribute is visibly true first.
-    if (suggestionsCache) { populate(suggestionsCache); return; }
-    if (!suggestionsFetchPromise) {
-      suggestionsFetchPromise = fetchSuggestions().then(function (items) {
-        suggestionsCache = items;
-        return items;
-      });
+    var loadToken = 0;
+    function loadCurrent() {
+      var tok = ++loadToken;
+      var pf = suggestionsPlatform;
+      if (pf !== "all") {
+        if (suggestionsPlatformCache[pf]) { populate(suggestionsPlatformCache[pf]); suggestionsRow.scrollLeft = 0; return; }
+        suggestionsRow.classList.add("suggestions-row--loading");
+        fetchPlatformSuggestions(pf).then(function (items) {
+          suggestionsPlatformCache[pf] = items;
+          suggestionsRow.classList.remove("suggestions-row--loading");
+          if (tok !== loadToken || suggestionsPlatform !== pf) return;
+          populate(items);
+          suggestionsRow.scrollLeft = 0;
+        });
+        return;
+      }
+      if (suggestionsCache) { populate(suggestionsCache); suggestionsRow.scrollLeft = 0; return; }
+      if (!suggestionsFetchPromise) {
+        suggestionsFetchPromise = fetchSuggestions().then(function (items) {
+          suggestionsCache = items;
+          return items;
+        });
+      }
+      suggestionsFetchPromise.then(function (items) { if (tok === loadToken) populate(items); });
     }
-    suggestionsFetchPromise.then(populate);
+    var pfBar = document.getElementById("sugg-platforms");
+    if (pfBar) pfBar.addEventListener("click", function (e) {
+      var b = e.target.closest("[data-sugg-platform]"); if (!b) return;
+      suggestionsPlatform = b.getAttribute("data-sugg-platform");
+      pfBar.querySelectorAll(".sugg-pf").forEach(function (x) { x.classList.toggle("sugg-pf--on", x === b); });
+      loadCurrent();
+    });
+    loadCurrent();
   }
 
   function bindAjouter() {
@@ -8601,6 +8684,14 @@ function boot(INITIAL_STATE) {
 ".suggestions--framed{border:1px solid var(--border);border-radius:1.1rem;" +
   "background:var(--surface);padding:1.2rem 1.1rem 1.4rem;}" +
 ".suggestions-label{font-size:.82rem;color:var(--ink-dim);margin:0 0 1rem;}" +
+".sugg-platforms{display:flex;gap:.45rem;overflow-x:auto;margin:0 0 .9rem;padding-bottom:.1rem;scrollbar-width:none;-webkit-overflow-scrolling:touch;}" +
+".sugg-platforms::-webkit-scrollbar{display:none;}" +
+".sugg-pf{flex:none;display:inline-flex;align-items:center;gap:.4rem;border:1px solid var(--border);background:var(--surface);color:var(--ink);border-radius:999px;padding:.38rem .8rem .38rem .45rem;font:inherit;font-size:.78rem;cursor:pointer;white-space:nowrap;}" +
+".sugg-pf:first-child{padding-left:.8rem;}" +
+".sugg-pf i{width:1.05rem;height:1.05rem;border-radius:.3rem;display:block;}" +
+".sugg-pf--on{background:var(--accent);color:var(--accent-ink);border-color:var(--accent);font-weight:700;}" +
+".suggestions-row--loading{opacity:.4;pointer-events:none;transition:opacity .15s;}" +
+".suggestions-empty{color:var(--ink-dim);font-size:.85rem;margin:1rem auto;text-align:center;}" +
 // See renderSuggestionsBlock's centerLabel option (used on both screens) —
 // centered over the carousel below it, which itself centers its cards
 // whenever they fit without scrolling (see .row--centered).
