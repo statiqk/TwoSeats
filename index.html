@@ -1903,6 +1903,7 @@ function boot(INITIAL_STATE) {
   /* ---------- render ---------- */
   function render() {
     if (activeTab !== "matchs") matchsOpenId = null;
+    if (activeTab !== "bibliotheque") bibOpenId = null;
     updateNotifIndicators();
     var root = document.getElementById("root");
     if (isShareRoute()) {
@@ -4252,7 +4253,28 @@ function boot(INITIAL_STATE) {
     html += "<div class=\"mini-grid bib-grid\">";
     results.forEach(function (item) { html += renderBibMiniCard(item); });
     html += "</div>";
+    html += renderBibSheet();
     return html;
+  }
+
+  // Fiche d'un titre de la bibliothèque, en feuille par-dessus la page :
+  // les données seulement (aucun bouton d'action), fermée par ✕, un tap
+  // à côté ou Échap. Réutilise le style .mx-sheet de « Matchs ».
+  var bibOpenId = null;
+  function renderBibSheet() {
+    var open = bibOpenId && state.items.filter(function (i) { return i.id === bibOpenId; })[0];
+    if (!open) { bibOpenId = null; return ""; }
+    var rows = [["Statut", STATUS_LABEL[itemStatus(open)]]];
+    var rn = Object.keys(open.ratings || {});
+    if (rn.length) rows.push(["Notes", rn.map(function (n) { return escapeHtml(who(n)) + " " + open.ratings[n] + "★"; }).join(" · ")]);
+    if (open.addedBy) rows.push(["Ajouté par", escapeHtml(who(open.addedBy))]);
+    var info = "<div class=\"bib-info\">" + rows.map(function (r) {
+      return "<div class=\"bib-info-row\"><span>" + r[0] + "</span><span>" + r[1] + "</span></div>";
+    }).join("") + "</div>";
+    return "<div class=\"mx-sheet-ov\" data-bib-close=\"1\"><div class=\"mx-sheet mx-sheet--info\" role=\"dialog\" aria-modal=\"true\">" +
+      "<span class=\"rate-grab\" aria-hidden=\"true\"></span>" +
+      "<button type=\"button\" class=\"mx-sheet-x\" data-bib-close=\"1\" aria-label=\"Fermer\">&times;</button>" +
+      renderStub(open, { showVotes: false }) + info + "</div></div>";
   }
 
   // Contenu du panneau "Filtres" — extrait de renderBibliotheque() pour ne
@@ -4353,7 +4375,7 @@ function boot(INITIAL_STATE) {
     // .mini-status à l'intérieur) pour pouvoir griser toute la carte en
     // CSS sans dépendre de :has().
     var html = "<div class=\"mini-card mini-card--" + status + (waiting ? " mini-card--waiting" : "") +
-      "\" data-id=\"" + item.id + "\">";
+      "\" data-id=\"" + item.id + "\" data-bib-open=\"" + item.id + "\">";
     html += "<button type=\"button\" class=\"mini-delete-btn\" data-delete-id=\"" + item.id +
       "\" aria-label=\"Supprimer " + escapeHtml(item.title) + "\" title=\"Supprimer\">" +
       "<svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\">" +
@@ -4428,6 +4450,24 @@ function boot(INITIAL_STATE) {
   }
 
   function bindBibliotheque() {
+    document.querySelectorAll("[data-bib-open]").forEach(function (card) {
+      card.addEventListener("click", function (e) {
+        // Les boutons de la carte (partager, supprimer, étoiles, vote) gardent leur rôle
+        if (e.target.closest("button, .stars, .bib-vote-row")) return;
+        bibOpenId = card.getAttribute("data-bib-open");
+        render();
+      });
+    });
+    document.querySelectorAll("[data-bib-close]").forEach(function (el) {
+      el.addEventListener("click", function (e) {
+        if (e.target !== el) return;
+        bibOpenId = null;
+        render();
+      });
+    });
+    if (document._bxEsc) document.removeEventListener("keydown", document._bxEsc);
+    document._bxEsc = function (e) { if (e.key === "Escape" && bibOpenId && document.querySelector(".mx-sheet-ov")) { bibOpenId = null; render(); } };
+    document.addEventListener("keydown", document._bxEsc);
     document.querySelectorAll("[data-delete-id]").forEach(function (btn) {
       btn.addEventListener("click", async function (e) {
         e.stopPropagation();
@@ -6415,6 +6455,8 @@ function boot(INITIAL_STATE) {
   // recreated on every full innerHTML replace.
   function bindImageLightbox() {
     document.querySelectorAll(".stub-media img, .mini-poster img").forEach(function (img) {
+      // Dans la bibliothèque, l'affiche ouvre la fiche (data-bib-open), pas le plein écran
+      if (img.closest(".bib-grid")) return;
       img.addEventListener("click", function () {
         openLightbox(img.currentSrc || img.src);
       });
@@ -8280,6 +8322,11 @@ function boot(INITIAL_STATE) {
 ".mx-sheet{position:relative;width:100%;max-width:520px;max-height:90dvh;overflow-y:auto;background:var(--surface);border-radius:1.4rem 1.4rem 0 0;" +
   "padding:.6rem .9rem calc(1rem + env(safe-area-inset-bottom));}" +
 ".mx-sheet .stub{max-width:none;border:0;box-shadow:none;background:transparent;}" +
+".mx-sheet--info .title-gear--share{display:none;}" +
+".bib-info{margin:.2rem .4rem 1rem;}" +
+".bib-info-row{display:flex;justify-content:space-between;gap:1rem;padding:.6rem 0;border-bottom:1px dashed var(--border);font-size:.9rem;}" +
+".bib-info-row span:first-child{color:var(--ink-dim);}" +
+".bib-grid .mini-card[data-bib-open]{cursor:pointer;}" +
 ".mx-sheet-x{position:absolute;right:.7rem;top:.5rem;z-index:3;width:2.1rem;height:2.1rem;border-radius:50%;border:0;background:var(--surface-2);color:var(--ink);font-size:1.3rem;line-height:1;cursor:pointer;}" +
 "body:has(.mx-sheet-ov){overflow:hidden;}" +
 ".mini-card{width:100px;display:flex;flex-direction:column;gap:.4rem;position:relative;}" +
