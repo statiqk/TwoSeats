@@ -1902,6 +1902,7 @@ function boot(INITIAL_STATE) {
 
   /* ---------- render ---------- */
   function render() {
+    if (activeTab !== "matchs") matchsOpenId = null;
     updateNotifIndicators();
     var root = document.getElementById("root");
     if (isShareRoute()) {
@@ -4043,11 +4044,29 @@ function boot(INITIAL_STATE) {
     });
     if (olderMatched.length) {
       html += "<p class=\"mini-grid-label\">Le reste (" + olderMatched.length + ")</p>";
-      html += "<div class=\"mini-grid\">";
+      html += "<div class=\"mx-grid\">";
       olderMatched.forEach(function (item) { html += renderMatchMiniCard(item); });
       html += "</div>";
     }
+    // Fiche complète d'un titre du « reste », en feuille par-dessus la page
+    var open = matchsOpenId && olderMatched.filter(function (i) { return i.id === matchsOpenId; })[0];
+    if (open) {
+      var footer = "<div class=\"stub-actions stub-actions--single\"><button class=\"btn btn--ghost\" data-watched=\"1\">Marquer comme vu</button></div>";
+      html += "<div class=\"mx-sheet-ov\" data-match-close=\"1\"><div class=\"mx-sheet\" role=\"dialog\" aria-modal=\"true\">" +
+        "<span class=\"rate-grab\" aria-hidden=\"true\"></span>" +
+        "<button type=\"button\" class=\"mx-sheet-x\" data-match-close=\"1\" aria-label=\"Fermer\">&times;</button>" +
+        renderStub(open, { showVotes: true, footer: footer }) + "</div></div>";
+    } else {
+      matchsOpenId = null;
+    }
     return html;
+  }
+  var matchsOpenId = null;       // titre du « reste » ouvert en fiche
+  function matchProviderName(item) {
+    var wp = item.watchProviders;
+    if (!wp) return "";
+    var l = (wp.flatrate || []).concat(wp.free || []);
+    return l.length ? String(l[0].name || "") : "";
   }
 
   // Compact card for older matches (everything past the 5 most recent,
@@ -4057,17 +4076,12 @@ function boot(INITIAL_STATE) {
   // binding (scoped via closest("[data-id]")) picks this up with no extra
   // wiring needed.
   function renderMatchMiniCard(item) {
-    var html = "<div class=\"mini-card\" data-id=\"" + item.id + "\">";
-    if (item.posterUrl) {
-      html += "<span class=\"mini-poster\">" +
-        "<img src=\"" + escapeHtml(item.posterUrl) + "\" alt=\"\" loading=\"lazy\" />" +
-        (item.year ? "<span class=\"mini-year\">" + escapeHtml(item.year) + "</span>" : "") +
-      "</span>";
-    }
-    html += "<span class=\"mini-title\">" + escapeHtml(item.title) + "</span>";
-    html += "<button type=\"button\" class=\"mini-watched-btn\" data-watched=\"1\">Marquer comme vu</button>";
-    html += "</div>";
-    return html;
+    var pn = matchProviderName(item);
+    return "<button type=\"button\" class=\"mx-rc\" data-match-open=\"" + escapeHtml(item.id) + "\">" +
+      "<span class=\"mx-rc-im\">" +
+      (item.posterUrl ? "<img src=\"" + escapeHtml(item.posterUrl) + "\" alt=\"\" loading=\"lazy\" />" : "<span class=\"mx-rc-ph\">" + escapeHtml(item.title) + "</span>") +
+      (pn ? "<span class=\"mx-pf\">" + escapeHtml(pn) + "</span>" : "") +
+      "</span><span class=\"mx-rc-t\">" + escapeHtml(item.title) + "</span></button>";
   }
 
   function renderVus() {
@@ -5577,9 +5591,26 @@ function boot(INITIAL_STATE) {
     document.querySelectorAll("[data-watched]").forEach(function (btn) {
       btn.addEventListener("click", function () {
         var id = btn.closest("[data-id]").getAttribute("data-id");
+        matchsOpenId = null;
         markWatched(id);
       });
     });
+    document.querySelectorAll("[data-match-open]").forEach(function (el) {
+      el.addEventListener("click", function () {
+        matchsOpenId = el.getAttribute("data-match-open");
+        render();
+      });
+    });
+    document.querySelectorAll("[data-match-close]").forEach(function (el) {
+      el.addEventListener("click", function (e) {
+        if (e.target !== el) return; // le fond ou la croix ferment, pas un clic dans la fiche
+        matchsOpenId = null;
+        render();
+      });
+    });
+    if (document._mxEsc) document.removeEventListener("keydown", document._mxEsc);
+    document._mxEsc = function (e) { if (e.key === "Escape" && matchsOpenId && document.querySelector(".mx-sheet-ov")) { matchsOpenId = null; render(); } };
+    document.addEventListener("keydown", document._mxEsc);
   }
 
   // Extrait de bindVus() pour être partagé avec bindBibliotheque() — les
@@ -8238,6 +8269,19 @@ function boot(INITIAL_STATE) {
 // only the trailing action (stars vs. "Vu" button) differs between them.
 ".mini-grid-label{font-size:.82rem;color:var(--ink-dim);margin:1.8rem 0 .8rem;}" +
 ".mini-grid{display:flex;flex-wrap:wrap;gap:1rem 1.1rem;}" +
+".mx-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:.8rem .65rem;}" +
+".mx-rc{background:none;border:0;padding:0;color:inherit;font:inherit;text-align:left;cursor:pointer;min-width:0;}" +
+".mx-rc-im{display:block;position:relative;aspect-ratio:2/3;border-radius:.75rem;overflow:hidden;border:1px solid var(--border);background:var(--surface-2);}" +
+".mx-rc-im img{width:100%;height:100%;object-fit:cover;display:block;}" +
+".mx-rc-ph{display:flex;align-items:flex-end;justify-content:center;height:100%;padding:.4rem;font-size:.66rem;font-weight:700;text-align:center;}" +
+".mx-rc-t{display:block;margin-top:.35rem;font-size:.76rem;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}" +
+".mx-pf{position:absolute;right:.3rem;top:.3rem;background:rgba(20,21,28,.9);border:1px solid #3b6b52;color:#6fd3a1;border-radius:.5rem;padding:.12rem .4rem;font-size:.56rem;font-weight:700;}" +
+".mx-sheet-ov{position:fixed;inset:0;z-index:80;background:rgba(5,6,10,.72);display:flex;align-items:flex-end;justify-content:center;}" +
+".mx-sheet{position:relative;width:100%;max-width:520px;max-height:90dvh;overflow-y:auto;background:var(--surface);border-radius:1.4rem 1.4rem 0 0;" +
+  "padding:.6rem .9rem calc(1rem + env(safe-area-inset-bottom));}" +
+".mx-sheet .stub{max-width:none;border:0;box-shadow:none;background:transparent;}" +
+".mx-sheet-x{position:absolute;right:.7rem;top:.5rem;z-index:3;width:2.1rem;height:2.1rem;border-radius:50%;border:0;background:var(--surface-2);color:var(--ink);font-size:1.3rem;line-height:1;cursor:pointer;}" +
+"body:has(.mx-sheet-ov){overflow:hidden;}" +
 ".mini-card{width:100px;display:flex;flex-direction:column;gap:.4rem;position:relative;}" +
 ".mini-delete-btn{position:absolute;top:.3rem;right:.3rem;z-index:2;width:1.6rem;height:1.6rem;" +
   "display:flex;align-items:center;justify-content:center;border-radius:999px;border:none;" +
